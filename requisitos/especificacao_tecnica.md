@@ -35,7 +35,7 @@
 
 ## 1. Identificação do Projeto
 
-* **Título do Projeto:** Sistema Embarcado IoT para Apontamento Automático de Produção com Armazenamento Offline de Alta Densidade
+* **Título do Projeto:** EdgeBench - Sistema IoT Embarcado para Apontamento Automático de Produção em Postos de Trabalho Manuais.
 * **Cenário de Referência:** Cenário 6 — Manufatura com bancadas de montagem manual e apontamento em pranchetas/planilhas no chão de fábrica.
 * **Aplicação Principal:** Indústria 4.0, Sensoriamento Industrial Não Invasivo, Telemetria IoT e Automação de PCP (Planejamento e Controle da Produção).
 
@@ -90,7 +90,7 @@ Os resultados concretos pretendidos são:
 
 | Componente | Modelo / Especificação | Função Técnica no Projeto | Justificativa de Engenharia |
 | :--- | :--- | :--- | :--- |
-| **Microcontrolador de Borda** | **ESP32-WROOM-32** (Dual-Core Xtensa LX6 @ 240 MHz, 520 KB SRAM, 4 MB Flash SPI) | Núcleo de processamento de borda, gestão de interrupções de hardware (*ISR*), sistema de arquivos LittleFS e pilha de rede Wi-Fi/MQTT. | Oferece processamento dual-core assíncrono (um núcleo dedicado ao sensoriamento em tempo real e o outro à comunicação de rede), baixo consumo, periféricos de interrupção externa e transceptor Wi-Fi integrado a custo inferior a US$ 4,00 por unidade. |
+| **Microcontrolador de Borda** | **Heltec ESP32-S3 LoRa** (Dual-Core Xtensa LX7 @ até 240 MHz, 512 KB SRAM, Flash e PSRAM conforme o módulo) | Núcleo de processamento de borda responsável pela aquisição dos dados de produção, tratamento das interrupções de hardware (ISR), processamento local, armazenamento dos registros em memória não volátil e transmissão dos dados por LoRa. | Integra microcontrolador ESP32-S3 e comunicação LoRa em uma única plataforma, permitindo o processamento local e a transmissão de dados de produção a longas distâncias, com baixo consumo energético e menor dependência da infraestrutura de rede da fábrica. |
 | **Sensor de Detecção de Peças** | **Sensor Fotoelétrico E18-D80NK** (Infravermelho Difuso Ajustável, 5V DC, saída NPN Coletor Aberto) | Detecção de passagem física da peça na rampa de gravidade/calha por corte do feixe refletido. | Resposta ultrarrápida (< 2 ms), faixa de detecção ajustável (3 a 80 cm), invólucro cilíndrico rosqueável industrial (M18) imune a poeira e luz ambiente visível graças à modulação infravermelha. |
 | **Condicionador de Sinal / Proteção** | Divisor de Tensão Resistivo (3.3kΩ / 2.2kΩ) ou Optoacoplador **PC817** | Adequação de nível lógico (saída 5V do sensor para 3.3V do GPIO do ESP32) e isolamento contra surtos. | Impede que transientes de tensão induzidos por motores fabris danifiquem os pinos do microcontrolador. |
 | **Fonte de Alimentação** | Fonte Chaveada 5V 2A Bivolt com filtro EMI | Fornecimento estável de alimentação para a placa ESP32 e para o sensor E18-D80NK. | Assegura imunidade contra oscilações severas de tensão da rede elétrica de fábrica. |
@@ -117,16 +117,23 @@ Os resultados concretos pretendidos são:
 
 ### 3.3 Análise Comparativa: IoT vs. Visão Computacional
 
-Uma das decisões de engenharia mais críticas desta proposta é a **adoção deliberada de sensoriamento óptico discreto via IoT em detrimento de Visão Computacional (VC)**. A tabela a seguir fundamenta tecnicamente essa decisão:
+Uma das decisões de engenharia centrais desta proposta é a **adoção de sensoriamento óptico discreto integrado a um dispositivo IoT de borda, baseado em ESP32-S3 com comunicação LoRa, em detrimento de uma arquitetura baseada em Visão Computacional (VC)**. Essa escolha está relacionada principalmente às características do processo analisado: postos de montagem manuais, geometria conhecida do ponto de passagem das peças, necessidade de baixo custo por bancada e operação contínua mesmo diante de limitações de conectividade.
 
-| Dimensão de Análise | Abordagem Proposta: Sensoriamento IoT (E18-D80NK + ESP32) | Abordagem Alternativa: Visão Computacional (Câmera + SBC/NVIDIA Jetson) | Veredito Técnico |
+A solução proposta utiliza um sensor óptico infravermelho **E18-D80NK** instalado em uma posição controlada da bancada para identificar a passagem dos produtos. O sinal é processado localmente pelo **ESP32-S3**, que realiza a contagem e o registro dos eventos de produção. Os dados são armazenados localmente e posteriormente transmitidos por **LoRa** ao concentrador/gateway, reduzindo a dependência de conectividade IP em cada posto de trabalho.
+
+| Dimensão de Análise | Abordagem Proposta: IoT de Borda (E18-D80NK + ESP32-S3 + LoRa) | Abordagem Alternativa: Visão Computacional (Câmera + SBC) | Veredito Técnico |
 | :--- | :--- | :--- | :--- |
-| **Custo Unitário de Hardware por Bancada** | **Baixo (~R$ 60 - R$ 90):** ESP32, sensor infravermelho, fonte e passivos. | **Elevado (~R$ 850 - R$ 2.500):** Câmera industrial/USB de alta taxa de quadros + SBC (Raspberry Pi 4 / Jetson Nano). | **IoT vence por larga escala.** Viabiliza cobrir dezenas de bancadas com fração do orçamento. |
-| **Problema da Oclusão Visual** | **Imune:** O sensor é instalado internamente na calha física. A peça desliza em canal fechado, impossibilitando que a mão ou corpo do operador bloqueie a leitura. | **Crítico:** Câmeras superiores sofrem oclusão constante pelas mãos, braços e ferramentas dos montadores, exigindo lógica complexa de rastreamento (*tracking*). | **IoT elimina oclusões** ao desacoplar a montagem manual da zona de saída do produto. |
-| **Sensibilidade à Iluminação Fabril** | **Imune:** O sensor E18-D80NK utiliza feixe infravermelho de 940 nm pulsado com demodulação em hardware, rejeitando luz ambiente, sombras e lâmpadas fluorescentes/LED. | **Instável:** Variações de luminosidade fabril, reflexos em peças metálicas/plásticas e sombras causam falsos positivos e perda de detecção em algoritmos de segmentação. | **IoT garante repetibilidade** independentemente de horário de turno ou iluminação ambiente. |
-| **Consumo Energético e Dissipação Térmica** | **Mínimo (< 1,2 W):** Pode ser mantido por mini-UPS ou baterias comuns por dias. Não requer dissipadores ativos nem ventoinhas. | **Alto (10 W a 25 W):** SBCs aquecem no chão de fábrica, acumulando poeira em coolers e aumentando risco de falha térmica (*thermal throttling*). | **IoT apresenta MTBF (tempo médio entre falhas) drasticamente superior.** |
-| **Latência e Determinismo Temporal** | **Microssegundos:** Interrupção de hardware no ESP32 reage em menos de **10 µs**. A detecção é determinística. | **Milissegundos (33 ms a 150 ms):** Limitada pela taxa de frames (30-60 fps) e tempo de inferência de redes neurais (ex.: YOLO/MobileNet). | **IoT oferece resposta em tempo real estrita**, sem perda de peças rápidas. |
-| **Complexidade de Manutenção e Treinamento** | **Trivial:** Ajuste de sensibilidade mecânica por potenciômetro no corpo do sensor. Troca plug-and-play em 5 minutos. | **Alta:** Exige calibração de lentes, ajuste de foco, re-treinamento de modelos neurais caso a geometria da peça mude. | **IoT reduz o custo total de posse (TCO)** e não demanda engenheiros de visão na planta. |
+| **Custo Unitário por Bancada** | **Baixo:** utiliza microcontrolador, sensor óptico, alimentação e componentes auxiliares. A comunicação LoRa permite uma infraestrutura compartilhada entre diversos postos. | **Elevado:** requer câmera, processamento computacional e, dependendo da aplicação, elementos adicionais de iluminação e montagem. | **IoT favorece a implantação em larga escala**, especialmente quando dezenas de bancadas precisam ser monitoradas. |
+| **Complexidade da Detecção** | **Baixa:** o sensor é posicionado em um ponto físico previamente definido, no qual a passagem da peça provoca uma alteração no feixe infravermelho. | **Alta:** a câmera precisa interpretar a cena e distinguir peças, mãos, ferramentas e outros elementos presentes no campo de visão. | **IoT apresenta maior simplicidade** para processos com ponto de passagem bem definido. |
+| **Oclusão por Operadores** | **Reduzida:** a instalação do sensor em uma calha ou ponto de passagem dedicado permite separar fisicamente a região de detecção da área de manipulação do operador. | **Relevante:** mãos, braços, ferramentas e peças podem bloquear parcial ou totalmente o objeto durante a aquisição da imagem. | **IoT apresenta vantagem** quando é possível controlar fisicamente o ponto de detecção. |
+| **Influência da Iluminação** | **Baixa:** o sensoriamento é baseado em emissão e recepção de radiação infravermelha, reduzindo a dependência das condições de iluminação visível do posto. Entretanto, o sensor ainda deve ser instalado e ajustado de acordo com suas especificações. | **Maior:** alterações de iluminação, reflexos, sombras e variações no ambiente podem afetar a qualidade das imagens e a confiabilidade da detecção. | **IoT tende a apresentar maior previsibilidade** em ambientes com iluminação variável. |
+| **Processamento Local** | **Elevada eficiência:** o ESP32-S3 executa a lógica de detecção, contagem, registro e gerenciamento da comunicação diretamente no dispositivo de borda. | **Maior demanda computacional:** aplicações de VC podem exigir processamento de imagens e, em casos mais complexos, aceleradores ou SBCs de maior capacidade. | **IoT é mais adequado** quando a tarefa consiste essencialmente em detectar eventos discretos de passagem. |
+| **Latência da Detecção** | **Baixa:** a alteração do estado do sensor pode ser tratada diretamente por entrada digital e interrupções de hardware, permitindo resposta rápida e previsível. | **Dependente do pipeline de imagem:** a latência é influenciada pela taxa de captura, processamento da imagem, algoritmo utilizado e capacidade computacional do SBC. | **IoT apresenta maior determinismo** para eventos simples de presença/passagem. |
+| **Comunicação entre Bancadas** | **LoRa:** permite comunicação sem fio de longo alcance e baixo consumo entre os nós de produção e um gateway/concentrador. | **Normalmente baseada em Wi-Fi/Ethernet:** cada câmera ou SBC necessita de infraestrutura de rede com maior largura de banda. | **LoRa é vantajoso para telemetria**, pois os dados de produção são pequenos e periódicos. |
+| **Operação Offline** | **Nativa:** os eventos podem ser armazenados localmente no dispositivo e transmitidos posteriormente quando a comunicação estiver disponível. | **Possível, porém mais onerosa:** exige armazenamento local e gerenciamento de dados no SBC, além de maior capacidade computacional. | **IoT apresenta vantagem** em aplicações que exigem continuidade operacional sem conectividade. |
+| **Manutenção** | **Simplificada:** envolve principalmente posicionamento, limpeza e ajuste do sensor, além da substituição do módulo eletrônico quando necessário. | **Mais complexa:** pode envolver foco, posicionamento, iluminação, calibração e atualização dos algoritmos de processamento. | **IoT reduz a complexidade operacional** da manutenção. |
+| **Flexibilidade para Diferentes Produtos** | **Limitada:** alterações significativas na geometria, material ou trajetória das peças podem exigir reajuste mecânico ou do sensor. | **Maior:** uma câmera pode ser reconfigurada por software para reconhecer diferentes características e objetos. | **VC vence em flexibilidade**, enquanto **IoT vence em simplicidade** quando o processo é padronizado. |
+| **Adequação ao Processo Proposto** | **Alta:** ideal para contagem de produtos que passam por um ponto físico conhecido e controlado. | **Desnecessariamente complexa** quando a única informação necessária é identificar a passagem de uma peça. | **IoT é a alternativa mais adequada** ao problema estudado. |
 
 > **Conclusão de Engenharia:** Para o problema estrito de **apontamento quantitativo de peças acabadas**, o sensoriamento físico de barreira em calha é superior em todos os índices de robustez, confiabilidade, custo e facilidade operacional quando comparado à Visão Computacional.
 
@@ -464,12 +471,16 @@ Para a validação formal da solução em linha piloto, os seguintes testes obje
 1. **Acurácia de Contagem Estática e Dinâmica:**
    * *Procedimento:* Submeter 1.000 peças de geometrias e velocidades variadas pela calha de escoamento.
    * *Critério de Aceite:* O sistema deve registrar entre 995 e 1.000 peças ($99{,}5\%$ a $100\%$ de precisão).
-2. **Teste de Sobrevivência à Falha de Conectividade (Offline Resilience):**
-   * *Procedimento:* Desligar o ponto de acesso Wi-Fi durante a passagem de 500 peças consecutivas; religar o ponto de acesso após 1 hora.
-   * *Critério de Aceite:* $100\%$ dos 500 registros gerados durante o apagão de rede devem ser transmitidos ao Broker em ordem cronológica, sem perda de pacotes e sem travamento do microcontrolador.
+
+2. **Teste de Sobrevivência à Falha de Comunicação LoRa (Offline Resilience):**
+   * *Procedimento:* Interromper a comunicação LoRa entre o dispositivo Heltec ESP32-S3 e o gateway durante a passagem de 500 peças consecutivas; restabelecer a comunicação após 1 hora.
+   * *Critério de Aceite:* $100\%$ dos 500 registros gerados durante a indisponibilidade da comunicação devem permanecer armazenados localmente e ser transmitidos ao gateway após o restabelecimento da comunicação, em ordem cronológica e sem travamento do microcontrolador.
+
 3. **Teste de Recuperação de Energia (Power-Loss Robustness):**
-   * *Procedimento:* Interromper a alimentação de 5V do ESP32 repetidamente durante operações de escrita na Flash.
+   * *Procedimento:* Interromper a alimentação de 5V do ESP32-S3 repetidamente durante operações de escrita na Flash.
    * *Critério de Aceite:* O sistema de arquivos LittleFS deve remontar com sucesso no boot subsequente sem corrupção dos dados previamente persistidos.
+
 4. **Validação das Planilhas de Relatório:**
    * *Procedimento:* Comparar a planilha `.xlsx` exportada no término do turno com os logs brutos do banco de dados e as contagens físicas de auditoria.
    * *Critério de Aceite:* Totais por hora e por bancada rigorosamente coincidentes com as somas das telemetrias validadas.
+
