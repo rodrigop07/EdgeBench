@@ -36,6 +36,11 @@
 ## 1. Identificação do Projeto
 
 * **Título do Projeto:** EdgeBench - Sistema IoT Embarcado para Apontamento Automático de Produção em Postos de Trabalho Manuais.
+* **Equipe e integrantes:** Os Comédia
+*    - Amaro Junior Silva Luna
+*    - Bruno da Silva Macedo
+*    - Jonathas Levi Pascoal Palmeira
+*    - Rodrigo Pinheiro Alcantara 
 * **Cenário de Referência:** Cenário 6 — Manufatura com bancadas de montagem manual e apontamento em pranchetas/planilhas no chão de fábrica.
 * **Aplicação Principal:** Indústria 4.0, Sensoriamento Industrial Não Invasivo, Telemetria IoT e Automação de PCP (Planejamento e Controle da Produção).
 
