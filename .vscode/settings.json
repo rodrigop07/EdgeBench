@@ -1,0 +1,16 @@
+{
+  "idf.currentSetup": "C:\\esp\\v5.5.5\\esp-idf",
+  "idf.projectDir": "${workspaceFolder}/firmware",
+  "idf.openOcdConfigs": [
+    "board/esp32s3-builtin.cfg"
+  ],
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32s3"
+  },
+  "clangd.path": "C:\\Espressif\\tools\\esp-clang\\esp-19.1.2_20250312\\esp-clang\\bin\\clangd.exe",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=c:\\Users\\rodri\\Documents\\business\\EdgeBench\\build"
+  ]
+}

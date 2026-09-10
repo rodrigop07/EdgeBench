@@ -28,19 +28,21 @@
 *.so.*
 *.dylib
 
-# Executables
+# Executables & Binaries
 *.exe
 *.out
 *.app
 *.i*86
 *.x86_64
 *.hex
+*.bin
 
 # Debug files
 *.dSYM/
 *.su
 *.idb
 *.pdb
+*.dwo
 
 # Kernel Module Compile Results
 *.mod*
@@ -51,5 +53,40 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
-# debug information files
-*.dwo
+# ==========================================
+# ESP-IDF & ESP32 / ESP32-S3 Build Artifacts
+# ==========================================
+build/
+**/build/
+flasher_args.json
+project_description.json
+compile_commands.json
+
+# Generated ESP-IDF SDK configuration (preserves defaults and CI)
+sdkconfig
+sdkconfig.old
+*.bak
+!sdkconfig.defaults
+!sdkconfig.ci
+!sdkconfig.defaults.*
+
+# ESP-IDF Component Manager & Tools
+managed_components/
+.espressif/
+**/components/.idf/
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# Tooling & IDE
+.clangd/
+.ccls-cache/
+.DS_Store
+Thumbs.db
+Desktop.ini
