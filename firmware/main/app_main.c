@@ -23,7 +23,10 @@
 #include "esp_log.h"
 #include "mqtt_client.h"
 
+// variáveis globais para gerenciar a conexão MQTT
 static const char *TAG = "mqtt5_example";
+static esp_mqtt_client_handle_t s_mqtt_client = NULL;
+static bool s_is_mqtt_connected = false;
 
 static void log_error_if_nonzero(const char *message, int error_code)
 {
@@ -114,39 +117,13 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
     ESP_LOGD(TAG, "free heap size is %" PRIu32 ", minimum %" PRIu32, esp_get_free_heap_size(), esp_get_minimum_free_heap_size());
     switch ((esp_mqtt_event_id_t)event_id) {
     case MQTT_EVENT_CONNECTED:
-        ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
-        print_user_property(event->property->user_property);
-        esp_mqtt5_client_set_user_property(&publish_property.user_property, user_property_arr, USE_PROPERTY_ARR_SIZE);
-        esp_mqtt5_client_set_publish_property(client, &publish_property);
-        msg_id = esp_mqtt_client_publish(client, "/topic/qos1", "data_3", 0, 1, 1);
-        esp_mqtt5_client_delete_user_property(publish_property.user_property);
-        publish_property.user_property = NULL;
-        ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
-
-        esp_mqtt5_client_set_user_property(&subscribe_property.user_property, user_property_arr, USE_PROPERTY_ARR_SIZE);
-        esp_mqtt5_client_set_subscribe_property(client, &subscribe_property);
-        msg_id = esp_mqtt_client_subscribe(client, "/topic/qos0", 0);
-        esp_mqtt5_client_delete_user_property(subscribe_property.user_property);
-        subscribe_property.user_property = NULL;
-        ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
-
-        esp_mqtt5_client_set_user_property(&subscribe1_property.user_property, user_property_arr, USE_PROPERTY_ARR_SIZE);
-        esp_mqtt5_client_set_subscribe_property(client, &subscribe1_property);
-        msg_id = esp_mqtt_client_subscribe(client, "/topic/qos1", 2);
-        esp_mqtt5_client_delete_user_property(subscribe1_property.user_property);
-        subscribe1_property.user_property = NULL;
-        ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
-
-        esp_mqtt5_client_set_user_property(&unsubscribe_property.user_property, user_property_arr, USE_PROPERTY_ARR_SIZE);
-        esp_mqtt5_client_set_unsubscribe_property(client, &unsubscribe_property);
-        msg_id = esp_mqtt_client_unsubscribe(client, "/topic/qos0");
-        ESP_LOGI(TAG, "sent unsubscribe successful, msg_id=%d", msg_id);
-        esp_mqtt5_client_delete_user_property(unsubscribe_property.user_property);
-        unsubscribe_property.user_property = NULL;
+        ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED: broker conectado com sucesso");
+        s_is_mqtt_connected = true;
         break;
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
         print_user_property(event->property->user_property);
+        s_is_mqtt_connected = false;
         break;
     case MQTT_EVENT_SUBSCRIBED:
         ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
@@ -157,12 +134,6 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
         break;
     case MQTT_EVENT_UNSUBSCRIBED:
         ESP_LOGI(TAG, "MQTT_EVENT_UNSUBSCRIBED, msg_id=%d", event->msg_id);
-        print_user_property(event->property->user_property);
-        esp_mqtt5_client_set_user_property(&disconnect_property.user_property, user_property_arr, USE_PROPERTY_ARR_SIZE);
-        esp_mqtt5_client_set_disconnect_property(client, &disconnect_property);
-        esp_mqtt5_client_delete_user_property(disconnect_property.user_property);
-        disconnect_property.user_property = NULL;
-        esp_mqtt_client_disconnect(client);
         break;
     case MQTT_EVENT_PUBLISHED:
         ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
@@ -215,9 +186,9 @@ static void mqtt5_app_start(void)
     esp_mqtt_client_config_t mqtt5_cfg = {
         .broker.address.uri = CONFIG_BROKER_URL,
         .session.protocol_ver = MQTT_PROTOCOL_V_5,
-        .network.disable_auto_reconnect = true,
-        .credentials.username = "123",
-        .credentials.authentication.password = "456",
+        .network.disable_auto_reconnect = false,
+        //.credentials.username = "123",
+        //.credentials.authentication.password = "456",
         .session.last_will.topic = "/topic/will",
         .session.last_will.msg = "i will leave",
         .session.last_will.msg_len = 12,
@@ -225,9 +196,10 @@ static void mqtt5_app_start(void)
         .session.last_will.retain = true,
     };
 
-#if CONFIG_BROKER_URL_FROM_STDIN
+    
+    #if CONFIG_BROKER_URL_FROM_STDIN
     char line[128];
-
+    
     if (strcmp(mqtt5_cfg.uri, "FROM_STDIN") == 0) {
         int count = 0;
         printf("Please enter url of mqtt broker\n");
@@ -248,14 +220,14 @@ static void mqtt5_app_start(void)
         ESP_LOGE(TAG, "Configuration mismatch: wrong broker url");
         abort();
     }
-#endif /* CONFIG_BROKER_URL_FROM_STDIN */
-
-    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt5_cfg);
+    #endif /* CONFIG_BROKER_URL_FROM_STDIN */
+    
+    s_mqtt_client = esp_mqtt_client_init(&mqtt5_cfg);
 
     /* Set connection properties and user properties */
     esp_mqtt5_client_set_user_property(&connect_property.user_property, user_property_arr, USE_PROPERTY_ARR_SIZE);
     esp_mqtt5_client_set_user_property(&connect_property.will_user_property, user_property_arr, USE_PROPERTY_ARR_SIZE);
-    esp_mqtt5_client_set_connect_property(client, &connect_property);
+    esp_mqtt5_client_set_connect_property(s_mqtt_client, &connect_property);
 
     /* If you call esp_mqtt5_client_set_user_property to set user properties, DO NOT forget to delete them.
      * esp_mqtt5_client_set_connect_property will malloc buffer to store the user_property and you can delete it after
@@ -264,13 +236,13 @@ static void mqtt5_app_start(void)
     esp_mqtt5_client_delete_user_property(connect_property.will_user_property);
 
     /* The last argument may be used to pass data to the event handler, in this example mqtt_event_handler */
-    esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt5_event_handler, NULL);
-    esp_mqtt_client_start(client);
+    esp_mqtt_client_register_event(s_mqtt_client, ESP_EVENT_ANY_ID, mqtt5_event_handler, NULL);
+    esp_mqtt_client_start(s_mqtt_client);
 }
 
-#define SENSOR_E18_PIN         GPIO_NUM_48
-#define ESP_INTR_FLAG_DEFAULT  0
-#define SENSOR_DEBOUNCE_US     300000ULL // Debounce de 300 ms (em microssegundos)
+#define SENSOR_E18_PIN GPIO_NUM_48
+#define ESP_INTR_FLAG_DEFAULT 0
+#define SENSOR_DEBOUNCE_US 300000ULL // Debounce de 300 ms (em microssegundos)
 
 static QueueHandle_t s_sensor_evt_queue = NULL;
 static volatile int64_t s_last_sensor_interrupt_time = 0;
@@ -318,6 +290,19 @@ static void sensor_task(void *pvParameters)
             ESP_LOGI(TAG, "=======================================================");
             printf(">>> [TERMINAL] Interrupcao ISR processada com sucesso no GPIO %lu (Deteccao #%lu) <<<\n\n",
                    (unsigned long)io_num, (unsigned long)detection_count);
+
+            // verifica se o cliente mqtt está conectado
+            if(s_is_mqtt_connected){
+                //
+                char payload[128];
+                snprintf(payload, sizeof(payload), "{\"gpio\": %lu, \"contagem\": %lu}", (unsigned long)io_num, (unsigned long)detection_count);
+
+                esp_mqtt5_client_set_publish_property(s_mqtt_client, &publish_property);
+                int msg_id = esp_mqtt_client_publish(s_mqtt_client, "sensor/e18/contagem", payload, 0, 2, 0);
+                ESP_LOGI(TAG, "Mensagem MQTT enviada, id: %d", msg_id);
+            }else{
+                ESP_LOGI(TAG, "Broker MQTT nao esta conectado");
+            }
         } else {
             // Diagnostico periodico para checar o nivel eletrico do pino em tempo real
             int current_level = gpio_get_level(SENSOR_E18_PIN);
