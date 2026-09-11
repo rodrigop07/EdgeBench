@@ -240,11 +240,12 @@ static void mqtt5_app_start(void)
     esp_mqtt_client_start(s_mqtt_client);
 }
 
-#define SENSOR_E18_PIN GPIO_NUM_48
-#define ESP_INTR_FLAG_DEFAULT 0
-#define SENSOR_DEBOUNCE_US 300000ULL // Debounce de 300 ms (em microssegundos)
+#define SENSOR_E18_PIN GPIO_NUM_48 // define o pino onde esta conectado o sensor
+#define ESP_INTR_FLAG_DEFAULT 0 // define a flag de interrupcao
+#define SENSOR_DEBOUNCE_US 300000ULL // Debounce de 300 ms para evitar falsos positivos
 
 static QueueHandle_t s_sensor_evt_queue = NULL;
+static QueueHandle_t s_storage_queue = NULL;
 static volatile int64_t s_last_sensor_interrupt_time = 0;
 
 /*
@@ -273,59 +274,56 @@ static void IRAM_ATTR sensor_gpio_isr_handler(void *arg)
 }
 
 /*
- * @brief Tarefa FreeRTOS dedicada a processar eventos do sensor e imprimir no terminal
+ * @brief Tarefa FreeRTOS vinculada ao Core 1 dedicada a processar eventos do sensor e enviar para o Core 0
  */
-static void sensor_task(void *pvParameters)
+static void core1_sensor_task(void *pvParameters)
 {
+    // instala a ISR no core 1
+    gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+    gpio_isr_handler_add(SENSOR_E18_PIN, sensor_gpio_isr_handler, (void*)SENSOR_E18_PIN);
+
     uint32_t io_num;
     uint32_t detection_count = 0;
 
-    while (1) {
-        // Aguarda evento da ISR por ate 3 segundos
-        if (xQueueReceive(s_sensor_evt_queue, &io_num, pdMS_TO_TICKS(3000))) {
+    while(1){
+        if(xQueueReceive(s_sensor_evt_queue, &io_num, portMAX_DELAY)){
             detection_count++;
-            ESP_LOGI(TAG, "=======================================================");
-            ESP_LOGI(TAG, "[ISR DETECTADA] Sensor E18-D80NK acionado no GPIO %" PRIu32 "!", io_num);
-            ESP_LOGI(TAG, "Evento: Objeto/Peca detectada. Total de contagens: %" PRIu32, detection_count);
-            ESP_LOGI(TAG, "=======================================================");
-            printf(">>> [TERMINAL] Interrupcao ISR processada com sucesso no GPIO %lu (Deteccao #%lu) <<<\n\n",
-                   (unsigned long)io_num, (unsigned long)detection_count);
+            ESP_LOGI("Core1", "Deteccao no core 1 - Total: %d", detection_count);
+            xQueueSend(s_storage_queue, &detection_count, 0);
+        }
+    }
+}
 
-            // verifica se o cliente mqtt está conectado
+/*
+ * @brief Tarefa FreeRTOS vinculada ao Core 0 dedicada a armazenar e enviar dados para o Core 0
+ */
+static void core0_storage_task(void *pvParameters){
+    uint32_t count_to_save;
+
+    while(1){
+        // fica esperando dados vindos do core 1
+        if(xQueueReceive(s_storage_queue, &count_to_save, portMAX_DELAY)){
+            ESP_LOGI("Core0", "Contagem recebida do Core 1: %d, gravando na flash", count_to_save);
+            
             if(s_is_mqtt_connected){
-                //
                 char payload[128];
-                snprintf(payload, sizeof(payload), "{\"gpio\": %lu, \"contagem\": %lu}", (unsigned long)io_num, (unsigned long)detection_count);
-
+                snprintf(payload, sizeof(payload), "{\"gpio\": %lu, \"contagem\": %lu}", (unsigned long)SENSOR_E18_PIN, (unsigned long)count_to_save);
                 esp_mqtt5_client_set_publish_property(s_mqtt_client, &publish_property);
                 int msg_id = esp_mqtt_client_publish(s_mqtt_client, "sensor/e18/contagem", payload, 0, 2, 0);
                 ESP_LOGI(TAG, "Mensagem MQTT enviada, id: %d", msg_id);
             }else{
                 ESP_LOGI(TAG, "Broker MQTT nao esta conectado");
             }
-        } else {
-            // Diagnostico periodico para checar o nivel eletrico do pino em tempo real
-            int current_level = gpio_get_level(SENSOR_E18_PIN);
-            ESP_LOGI(TAG, "[DIAGNOSTICO E18] Leitura no GPIO %d: Nivel %s (%d)",
-                     SENSOR_E18_PIN,
-                     current_level ? "ALTO (1 - Sem obstaculo / Repouso)" : "BAIXO (0 - Obstaculo detectado / Travado)",
-                     current_level);
         }
     }
 }
 
 /*
- * @brief Configura o GPIO 19 e vincula a ISR para o sensor E18-D80NK
+ * @brief Configura o GPIO 48 e vincula a ISR para o sensor E18-D80NK
  */
 static void sensor_e18_init(void)
 {
-    // Cria fila de comunicacao segura entre ISR e Tarefa
-    s_sensor_evt_queue = xQueueCreate(10, sizeof(uint32_t));
-
-    // Cria a tarefa FreeRTOS para impressao/processamento no terminal
-    xTaskCreate(sensor_task, "sensor_e18_task", 3072, NULL, 10, NULL);
-
-    // Configuracao do pino GPIO 19:
+    // Configuracao do pino GPIO 48:
     // O sensor E18-D80NK possui saida NPN em coletor aberto (ativo em nivel logico BAIXO quando detecta obstaculo).
     // Configuramos com pull-up interno ativado e interrupcao na borda de descida (GPIO_INTR_NEGEDGE).
     gpio_config_t io_conf = {
@@ -337,16 +335,13 @@ static void sensor_e18_init(void)
     };
     ESP_ERROR_CHECK(gpio_config(&io_conf));
 
-    // Instala servico de interrupcao GPIO (se ainda nao tiver sido instalado)
-    esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "Falha ao instalar servico ISR GPIO: %s", esp_err_to_name(err));
-    }
+    // cria a task para o core 1
+    xTaskCreatePinnedToCore(core1_sensor_task, "core1_sensor_task", 4096, NULL, 10, NULL, 1);
 
-    // Vincula a ISR ao GPIO 19
-    ESP_ERROR_CHECK(gpio_isr_handler_add(SENSOR_E18_PIN, sensor_gpio_isr_handler, (void *)SENSOR_E18_PIN));
+    // cria a task para o core 0
+    xTaskCreatePinnedToCore(core0_storage_task, "core0_storage_task", 4096, NULL, 5, NULL, 0);
 
-    ESP_LOGI(TAG, "Sensor E18-D80NK configurado no GPIO %d com ISR vinculada (NEGEDGE).", SENSOR_E18_PIN);
+    ESP_LOGI(TAG, "Sensor E18-D80NK configurado no GPIO %d.", SENSOR_E18_PIN);
 }
 
 void app_main(void)
@@ -367,6 +362,20 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    // cria as filas de comunicação entre os cores
+    s_sensor_evt_queue = xQueueCreate(10, sizeof(uint32_t));
+    s_storage_queue = xQueueCreate(10, sizeof(uint32_t));
+
+    // verifica se as filas foram criadas com sucesso
+    if(s_storage_queue == NULL){
+        ESP_LOGE(TAG, "Falha ao criar s_storage_queue");
+        return;
+    }
+    if(s_sensor_evt_queue == NULL){
+        ESP_LOGE(TAG, "Falha ao criar s_sensor_evt_queue");
+        return;
+    }
 
     /* Inicializa o sensor E18-D80NK e vincula a ISR */
     sensor_e18_init();
