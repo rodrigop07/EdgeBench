@@ -22,6 +22,15 @@
 #include "protocol_examples_common.h"
 #include "esp_log.h"
 #include "mqtt_client.h"
+#include <time.h>
+#include <sys/time.h>
+#include "esp_netif_sntp.h"
+
+// estrutura para envio de dados do sensor com tempo
+typedef struct {
+    uint32_t count;
+    time_t timestamp;
+} sensor_data_record_t;
 
 // variáveis globais para gerenciar a conexão MQTT
 static const char *TAG = "mqtt5_example";
@@ -50,32 +59,6 @@ static esp_mqtt5_publish_property_config_t publish_property = {
     .response_topic = "/topic/test/response",
     .correlation_data = "123456",
     .correlation_data_len = 6,
-};
-
-static esp_mqtt5_subscribe_property_config_t subscribe_property = {
-    .subscribe_id = 25555,
-    .no_local_flag = false,
-    .retain_as_published_flag = false,
-    .retain_handle = 0,
-    .is_share_subscribe = true,
-    .share_name = "group1",
-};
-
-static esp_mqtt5_subscribe_property_config_t subscribe1_property = {
-    .subscribe_id = 25555,
-    .no_local_flag = true,
-    .retain_as_published_flag = false,
-    .retain_handle = 0,
-};
-
-static esp_mqtt5_unsubscribe_property_config_t unsubscribe_property = {
-    .is_share_subscribe = true,
-    .share_name = "group1",
-};
-
-static esp_mqtt5_disconnect_property_config_t disconnect_property = {
-    .session_expiry_interval = 60,
-    .disconnect_reason = 0,
 };
 
 static void print_user_property(mqtt5_user_property_handle_t user_property)
@@ -122,12 +105,16 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
         break;
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
-        print_user_property(event->property->user_property);
+        if (event->property) {
+            print_user_property(event->property->user_property);
+        }
         s_is_mqtt_connected = false;
         break;
     case MQTT_EVENT_SUBSCRIBED:
         ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
-        print_user_property(event->property->user_property);
+        if (event->property) {
+            print_user_property(event->property->user_property);
+        }
         esp_mqtt5_client_set_publish_property(client, &publish_property);
         msg_id = esp_mqtt_client_publish(client, "/topic/qos0", "data", 0, 0, 0);
         ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
@@ -137,27 +124,35 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
         break;
     case MQTT_EVENT_PUBLISHED:
         ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
-        print_user_property(event->property->user_property);
+        if (event->property) {
+            print_user_property(event->property->user_property);
+        }
         break;
     case MQTT_EVENT_DATA:
         ESP_LOGI(TAG, "MQTT_EVENT_DATA");
-        print_user_property(event->property->user_property);
-        ESP_LOGI(TAG, "payload_format_indicator is %d", event->property->payload_format_indicator);
-        ESP_LOGI(TAG, "response_topic is %.*s", event->property->response_topic_len, event->property->response_topic);
-        ESP_LOGI(TAG, "correlation_data is %.*s", event->property->correlation_data_len, event->property->correlation_data);
-        ESP_LOGI(TAG, "content_type is %.*s", event->property->content_type_len, event->property->content_type);
+        if (event->property) {
+            print_user_property(event->property->user_property);
+            ESP_LOGI(TAG, "payload_format_indicator is %d", event->property->payload_format_indicator);
+            ESP_LOGI(TAG, "response_topic is %.*s", event->property->response_topic_len, event->property->response_topic);
+            ESP_LOGI(TAG, "correlation_data is %.*s", event->property->correlation_data_len, event->property->correlation_data);
+            ESP_LOGI(TAG, "content_type is %.*s", event->property->content_type_len, event->property->content_type);
+        }
         ESP_LOGI(TAG, "TOPIC=%.*s", event->topic_len, event->topic);
         ESP_LOGI(TAG, "DATA=%.*s", event->data_len, event->data);
         break;
     case MQTT_EVENT_ERROR:
         ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
-        print_user_property(event->property->user_property);
-        ESP_LOGI(TAG, "MQTT5 return code is %d", event->error_handle->connect_return_code);
-        if (event->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT) {
-            log_error_if_nonzero("reported from esp-tls", event->error_handle->esp_tls_last_esp_err);
-            log_error_if_nonzero("reported from tls stack", event->error_handle->esp_tls_stack_err);
-            log_error_if_nonzero("captured as transport's socket errno",  event->error_handle->esp_transport_sock_errno);
-            ESP_LOGI(TAG, "Last errno string (%s)", strerror(event->error_handle->esp_transport_sock_errno));
+        if (event->property) {
+            print_user_property(event->property->user_property);
+        }
+        if (event->error_handle) {
+            ESP_LOGI(TAG, "MQTT5 return code is %d", event->error_handle->connect_return_code);
+            if (event->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT) {
+                log_error_if_nonzero("reported from esp-tls", event->error_handle->esp_tls_last_esp_err);
+                log_error_if_nonzero("reported from tls stack", event->error_handle->esp_tls_stack_err);
+                log_error_if_nonzero("captured as transport's socket errno",  event->error_handle->esp_transport_sock_errno);
+                ESP_LOGI(TAG, "Last errno string (%s)", strerror(event->error_handle->esp_transport_sock_errno));
+            }
         }
         break;
     default:
@@ -249,11 +244,11 @@ static QueueHandle_t s_storage_queue = NULL;
 static volatile int64_t s_last_sensor_interrupt_time = 0;
 
 /*
- * @brief Rotina de Atendimento a Interrupcao (ISR) vinculada ao GPIO 19
+ * @brief rotina de atendimento a interrupcao (ISR) vinculada ao GPIO 19
  *
- * Executada no contexto da ISR (alocada na IRAM).
- * Aplica filtro de debounce nao-bloqueante baseado em temporizador de hardware e
- * envia uma notificacao para a fila FreeRTOS sem invocar chamadas de I/O bloqueantes.
+ * executada no contexto da ISR (alocada na IRAM)
+ * aplica filtro de debounce nao-bloqueante baseado em temporizador de hardware e
+ * envia uma notificacao para a fila FreeRTOS sem invocar chamadas de I/O bloqueantes
  */
 static void IRAM_ATTR sensor_gpio_isr_handler(void *arg)
 {
@@ -288,8 +283,13 @@ static void core1_sensor_task(void *pvParameters)
     while(1){
         if(xQueueReceive(s_sensor_evt_queue, &io_num, portMAX_DELAY)){
             detection_count++;
-            ESP_LOGI("Core1", "Deteccao no core 1 - Total: %d", detection_count);
-            xQueueSend(s_storage_queue, &detection_count, 0);
+            time_t now = time(NULL);
+            sensor_data_record_t record = {
+                .count = detection_count,
+                .timestamp = now,
+            };
+            ESP_LOGI("Core1", "Deteccao no core 1 - Total: %lu", (unsigned long)detection_count);
+            xQueueSend(s_storage_queue, &record, 0);
         }
     }
 }
@@ -298,19 +298,35 @@ static void core1_sensor_task(void *pvParameters)
  * @brief Tarefa FreeRTOS vinculada ao Core 0 dedicada a armazenar e enviar dados para o Core 0
  */
 static void core0_storage_task(void *pvParameters){
-    uint32_t count_to_save;
+    sensor_data_record_t record;
 
     while(1){
         // fica esperando dados vindos do core 1
-        if(xQueueReceive(s_storage_queue, &count_to_save, portMAX_DELAY)){
-            ESP_LOGI("Core0", "Contagem recebida do Core 1: %d, gravando na flash", count_to_save);
+        if(xQueueReceive(s_storage_queue, &record, portMAX_DELAY)){
+            struct tm timeinfo;
+            char time_str[64];
+            localtime_r(&record.timestamp, &timeinfo);
+
+            // se o relógio já foi sincronizado via NTP (ano >= 2024), formata a data/hora local
+            if (timeinfo.tm_year >= (2024 - 1900)) {
+                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &timeinfo);
+            } else {
+                snprintf(time_str, sizeof(time_str), "Nao sincronizado (uptime %llds)", (long long)(esp_timer_get_time() / 1000000ULL));
+            }
+
+            ESP_LOGI("Core0", "Contagem recebida do Core 1: %lu [Horario: %s], gravando na flash", (unsigned long)record.count, time_str);
             
             if(s_is_mqtt_connected){
-                char payload[128];
-                snprintf(payload, sizeof(payload), "{\"gpio\": %lu, \"contagem\": %lu}", (unsigned long)SENSOR_E18_PIN, (unsigned long)count_to_save);
+                char payload[256];
+                snprintf(payload, sizeof(payload),
+                         "{\"gpio\": %lu, \"contagem\": %lu, \"horario\": \"%s\", \"timestamp\": %lld}",
+                         (unsigned long)SENSOR_E18_PIN,
+                         (unsigned long)record.count,
+                         time_str,
+                         (long long)record.timestamp);
                 esp_mqtt5_client_set_publish_property(s_mqtt_client, &publish_property);
-                int msg_id = esp_mqtt_client_publish(s_mqtt_client, "sensor/e18/contagem", payload, 0, 2, 0);
-                ESP_LOGI(TAG, "Mensagem MQTT enviada, id: %d", msg_id);
+                int msg_id = esp_mqtt_client_publish(s_mqtt_client, "sensor/e18/contagem", payload, 0, 1, 0);
+                ESP_LOGI(TAG, "Mensagem MQTT enviada, id: %d, payload: %s", msg_id, payload);
             }else{
                 ESP_LOGI(TAG, "Broker MQTT nao esta conectado");
             }
@@ -323,9 +339,9 @@ static void core0_storage_task(void *pvParameters){
  */
 static void sensor_e18_init(void)
 {
-    // Configuracao do pino GPIO 48:
-    // O sensor E18-D80NK possui saida NPN em coletor aberto (ativo em nivel logico BAIXO quando detecta obstaculo).
-    // Configuramos com pull-up interno ativado e interrupcao na borda de descida (GPIO_INTR_NEGEDGE).
+    // configuracao do pino GPIO 48
+    // o sensor E18-D80NK possui saida NPN em coletor aberto (ativo em nivel logico BAIXO quando detecta obstaculo)
+    // configuramos com pull-up interno ativado e interrupcao na borda de descida (GPIO_INTR_NEGEDGE)
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << SENSOR_E18_PIN),
         .mode = GPIO_MODE_INPUT,
@@ -365,7 +381,7 @@ void app_main(void)
 
     // cria as filas de comunicação entre os cores
     s_sensor_evt_queue = xQueueCreate(10, sizeof(uint32_t));
-    s_storage_queue = xQueueCreate(10, sizeof(uint32_t));
+    s_storage_queue = xQueueCreate(10, sizeof(sensor_data_record_t));
 
     // verifica se as filas foram criadas com sucesso
     if(s_storage_queue == NULL){
@@ -377,15 +393,32 @@ void app_main(void)
         return;
     }
 
-    /* Inicializa o sensor E18-D80NK e vincula a ISR */
+    // inicializa o sensor E18-D80NK e vincula a ISR
     sensor_e18_init();
 
-    /* Tenta conectar ao Wi-Fi configurado no menuconfig sem abortar em caso de falha */
+    // tenta conectar ao wifi sem abortar em caso de falha
     esp_err_t wifi_err = example_connect();
     if (wifi_err != ESP_OK) {
         ESP_LOGW(TAG, "Wi-Fi nao conectado (%s). Operacao offline ativa: testando sensor E18-D80NK localmente.", esp_err_to_name(wifi_err));
     } else {
-        ESP_LOGI(TAG, "Wi-Fi conectado com sucesso! Iniciando cliente MQTT5...");
+        ESP_LOGI(TAG, "Wi-Fi conectado com sucesso!");
+
+        // configura fuso horario para Horario de Brasilia (UTC-3)
+        setenv("TZ", "<-03>3", 1);
+        tzset();
+
+        // inicializa o cliente SNTP para sincronizacao da hora via NTP
+        esp_sntp_config_t sntp_config = ESP_NETIF_SNTP_DEFAULT_CONFIG("a.st1.ntp.br");
+        esp_netif_sntp_init(&sntp_config);
+        ESP_LOGI(TAG, "SNTP inicializado (servidor: a.st1.ntp.br, fuso: UTC-3)");
+
+        if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(3000)) == ESP_OK) {
+            ESP_LOGI(TAG, "Horario sincronizado com sucesso via SNTP!");
+        } else {
+            ESP_LOGW(TAG, "Aguardando sincronizacao de horario em segundo plano...");
+        }
+
+        ESP_LOGI(TAG, "Iniciando cliente MQTT5...");
         mqtt5_app_start();
     }
 }
