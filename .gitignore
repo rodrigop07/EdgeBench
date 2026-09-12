@@ -90,3 +90,6 @@ env/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+.clang-format
+.editorconfig
