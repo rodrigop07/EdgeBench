@@ -131,3 +131,87 @@ esp_err_t nvs_manager_get_boot_count(uint32_t *boot_count) {
     nvs_close(handle);
     return err;
 }
+
+esp_err_t nvs_manager_get_wifi_credentials(char *out_ssid, size_t max_ssid_len, char *out_pass, size_t max_pass_len) {
+    // valida os argumento
+    if (out_ssid == NULL || max_ssid_len == 0 || out_pass == NULL || max_pass_len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Erro ao abrir NVS para ler credenciais Wi-Fi (%s)", esp_err_to_name(err));
+        return err;
+    }
+
+    // lê o SSID da rede
+    size_t required_ssid_len = max_ssid_len;
+    err = nvs_get_str(handle, "wifi_ssid", out_ssid, &required_ssid_len);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "SSID não encontrado na NVS. Usando padrão: %s", CONFIG_EXAMPLE_WIFI_SSID);
+        strncpy(out_ssid, CONFIG_EXAMPLE_WIFI_SSID, max_ssid_len - 1);
+        out_ssid[max_ssid_len - 1] = '\0';
+        nvs_set_str(handle, "wifi_ssid", out_ssid);
+        nvs_commit(handle);
+    }
+
+    // lê a Senha
+    size_t required_pass_len = max_pass_len;
+    err = nvs_get_str(handle, "wifi_pass", out_pass, &required_pass_len);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Senha de Wi-Fi não encontrada na NVS. Usando padrão.");
+        strncpy(out_pass, CONFIG_EXAMPLE_WIFI_PASSWORD, max_pass_len - 1);
+        out_pass[max_pass_len - 1] = '\0';
+        nvs_set_str(handle, "wifi_pass", out_pass);
+        nvs_commit(handle);
+    }
+
+    ESP_LOGI(TAG, "Credenciais Wi-Fi carregadas da NVS. SSID: %s", out_ssid);
+    nvs_close(handle);
+    return ESP_OK;
+}
+
+esp_err_t nvs_manager_set_wifi_credentials(const char *ssid, const char *pass) {
+    // valida os argumentos
+    if (ssid == NULL || strlen(ssid) == 0) {
+        ESP_LOGE(TAG, "SSID inválido");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Erro ao abrir NVS para gravar Wi-Fi (%s)", esp_err_to_name(err));
+        return err;
+    }
+
+    // grava SSID da rede
+    err = nvs_set_str(handle, "wifi_ssid", ssid);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Falha ao gravar 'wifi_ssid' na NVS (%s)", esp_err_to_name(err));
+        nvs_close(handle);
+        return err;
+    }
+
+    // grava Senha, permite string vazia para redes abertas
+    const char *safe_pass = (pass != NULL) ? pass : "";
+    err = nvs_set_str(handle, "wifi_pass", safe_pass);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Falha ao gravar 'wifi_pass' na NVS (%s)", esp_err_to_name(err));
+        nvs_close(handle);
+        return err;
+    }
+
+    // força a persistência física na Flash
+    err = nvs_commit(handle);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Novas credenciais Wi-Fi salvas com sucesso na NVS! (SSID: %s)", ssid);
+    } else {
+        ESP_LOGE(TAG, "Falha ao comitar credenciais Wi-Fi na NVS (%s)", esp_err_to_name(err));
+    }
+
+    nvs_close(handle);
+    return err;
+}

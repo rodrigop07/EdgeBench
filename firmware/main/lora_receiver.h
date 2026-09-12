@@ -12,8 +12,9 @@
 #define LORA_ESPECIAL_BYTE 0xEB
 
 // tipos de comandos que podem ser executados pelo rádio
-#define LORA_MSG_TIME_BEACON 0x01
-#define LORA_MSG_SET_BROKER 0x02
+#define LORA_MSG_TIME_BEACON 0x01 // comando para sincronizar horário
+#define LORA_MSG_SET_BROKER 0x02  // comando para atualizar url do broker mqtt
+#define LORA_MSG_SET_WIFI 0x03    // comando para atualizar ssid e senha da rede wifi
 
 // token de segurança para autorizar mudança de Broker pelo ar
 #define LORA_SECURITY_TOKEN 0xABCD1234
@@ -45,5 +46,8 @@ esp_err_t lora_receiver_start_task(void);
  * @param length quantidade de bytes recebidos
  */
 void lora_process_packet(const uint8_t *payload, size_t length);
+
+// função de teste
+void lora_receiver_test(void);
 
 #endif /* LORA_RECEIVER_H */

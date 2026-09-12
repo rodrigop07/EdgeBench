@@ -466,14 +466,34 @@ void app_main(void) {
     // inicializa o sensor E18-D80NK e vincula a ISR
     sensor_e18_init();
 
-    // tenta conectar ao wifi inicialmente (bloqueia ate conectar ou esgotar
-    // retentativas padrao)
+    // carrega as credenciais da rede Wi-Fi salvas na NVS
+    char wifi_ssid[32];
+    char wifi_pass[64];
+    nvs_manager_get_wifi_credentials(wifi_ssid, sizeof(wifi_ssid), wifi_pass, sizeof(wifi_pass));
+
+    // inicializa a infraestrutura de rede Wi-Fi
     esp_err_t wifi_err = example_connect();
+
+    // garante que as credenciais ativas sejam as da NVS
+    wifi_config_t current_wifi_cfg;
+    if (esp_wifi_get_config(WIFI_IF_STA, &current_wifi_cfg) == ESP_OK) {
+        if (strcmp((char *)current_wifi_cfg.sta.ssid, wifi_ssid) != 0 ||
+            strcmp((char *)current_wifi_cfg.sta.password, wifi_pass) != 0) {
+            ESP_LOGI(TAG, "Aplicando novas credenciais da NVS no Wi-Fi: SSID=%s", wifi_ssid);
+            strncpy((char *)current_wifi_cfg.sta.ssid, wifi_ssid, sizeof(current_wifi_cfg.sta.ssid) - 1);
+            strncpy((char *)current_wifi_cfg.sta.password, wifi_pass, sizeof(current_wifi_cfg.sta.password) - 1);
+
+            esp_wifi_disconnect();
+            esp_wifi_set_config(WIFI_IF_STA, &current_wifi_cfg);
+            esp_wifi_connect();
+        }
+    }
+
     if (wifi_err != ESP_OK) {
-        ESP_LOGW(TAG, "Wi-Fi nao conectou de primeira. Ativando retry infinito manual...");
+        ESP_LOGW(TAG, "Wi-Fi nao conectou de primeira. Tentando reconectar com as credenciais da NVS...");
         esp_wifi_connect();
     } else {
-        ESP_LOGI(TAG, "Wi-Fi conectado com sucesso na inicializacao!");
+        ESP_LOGI(TAG, "Wi-Fi conectado com sucesso");
     }
 
     // registra handler para manter o Wi-Fi sempre conectando em caso de queda
@@ -497,4 +517,5 @@ void app_main(void) {
 
     ESP_LOGI(TAG, "Iniciando cliente MQTT5 em background...");
     mqtt5_app_start();
+    lora_receiver_test();
 }

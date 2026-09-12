@@ -48,9 +48,8 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
         // ajusta o relógio interno do esp
         settimeofday(&tv, NULL);
         ESP_LOGI(TAG, "Horário sincronizado com sucesso via Beacon LoRa (Epoch: %llu)", (unsigned long long)epoch);
-    }
-    // trata pacote de atualização da URL do Broker
-    else if (msg_type == LORA_MSG_SET_BROKER) {
+    } else if (msg_type == LORA_MSG_SET_BROKER) {
+        // trata pacote de atualização da URL do Broker
         // tamanho esperado: 1 byte especial + 1 byte tipo + 4 bytes token + 1 byte tamanho_url = 7 bytes mínimos
         if (length < 7) {
             ESP_LOGW(TAG, "Pacote Set Broker com tamanho insuficiente (%d bytes)", (int)length);
@@ -87,7 +86,64 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
         if (err == ESP_OK) {
             ESP_LOGI(TAG, "Broker atualizado na NVS com sucesso!");
         } else {
-            ESP_LOGE(TAG, "Falha ao gravar novo Broker na NVS (%s)", esp_err_to_name(err));
+            ESP_LOGE(TAG, "Falha ao gravar URL Broker na NVS (%s)", esp_err_to_name(err));
+        }
+    } else if (msg_type == LORA_MSG_SET_WIFI) {
+        // tamanho esperado: 1 byte especial + 1 byte tipo + 4 bytes token + 1 byte tamanho_ssid + 1 byte tamanho_pass =
+        // 8 bytes
+        if (length < 8) {
+            ESP_LOGW(TAG, "Pacote Set Wi-Fi com tamanho insuficiente (%d bytes)", (int)length);
+            return;
+        }
+        // copia o token de segurança
+        uint32_t token = 0;
+        memcpy(&token, &payload[2], sizeof(uint32_t));
+
+        // validação de segurança
+        if (token != LORA_SECURITY_TOKEN) {
+            ESP_LOGW(TAG, "Tentativa de configurar Wi-Fi rejeitada: Token inválido (0x%08lX)", (unsigned long)token);
+            return;
+        }
+
+        // copia o tamanho do ssid
+        uint8_t ssid_len = payload[6];
+        // validação do tamanho do ssid
+        if (ssid_len == 0 || ssid_len >= 32 || length < (size_t)(7 + ssid_len + 1)) {
+            ESP_LOGW(TAG, "Tamanho de SSID inválido (%d)", ssid_len);
+            return;
+        }
+
+        // cria o novo ssid
+        char novo_ssid[32];
+        memcpy(novo_ssid, &payload[7], ssid_len);
+        novo_ssid[ssid_len] = '\0';
+
+        // posição do tamanho da senha
+        size_t pass_offset = 7 + ssid_len;
+        uint8_t pass_len = payload[pass_offset];
+
+        // validação do tamanho da senha
+        if (pass_len >= 64 || length < (pass_offset + 1 + pass_len)) {
+            ESP_LOGW(TAG, "Tamanho de senha Wi-Fi inválido (%d)", pass_len);
+            return;
+        }
+
+        // cria a nova senha
+        char nova_senha[64];
+        if (pass_len > 0) {
+            memcpy(nova_senha, &payload[pass_offset + 1], pass_len);
+        }
+        nova_senha[pass_len] = '\0';
+        ESP_LOGI(TAG, "Novas credenciais Wi-Fi recebidas via LoRa! SSID: %s", novo_ssid);
+
+        // grava na NVS
+        esp_err_t err = nvs_manager_set_wifi_credentials(novo_ssid, nova_senha);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "Wi-Fi atualizado na Flash! Reiniciando em 2 segundos para conectar na nova rede...");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            esp_restart();
+        } else {
+            ESP_LOGE(TAG, "Falha ao gravar Wi-Fi na NVS (%s)", esp_err_to_name(err));
         }
     } else {
         ESP_LOGW(TAG, "Tipo de mensagem LoRa desconhecido (0x%02X)", msg_type);
@@ -222,4 +278,35 @@ esp_err_t lora_receiver_start_task(void) {
 
     ESP_LOGI(TAG, "Tarefa lora_rx_task criada com sucesso no Core 0!");
     return ESP_OK;
+}
+
+void lora_receiver_test(void) {
+    ESP_LOGI(TAG, "=== INICIANDO TESTE DO PROTOCOLO LORA ===");
+
+    // simula pacote de Beacon de Horário (Timestamp de 12/09/2026)
+    uint64_t fake_timestamp = 1789228800ULL;
+    uint8_t beacon_pkt[10];
+    beacon_pkt[0] = LORA_ESPECIAL_BYTE;
+    beacon_pkt[1] = LORA_MSG_TIME_BEACON;
+    memcpy(&beacon_pkt[2], &fake_timestamp, sizeof(uint64_t));
+
+    ESP_LOGI(TAG, "[TESTE 1] Injetando pacote Beacon de Horário...");
+    lora_process_packet(beacon_pkt, sizeof(beacon_pkt));
+
+    // simula pacote de Alteração de Broker
+    const char *nova_url = "mqtt://192.168.1.99:1883";
+    uint8_t url_len = strlen(nova_url);
+    uint32_t token = LORA_SECURITY_TOKEN;
+
+    uint8_t broker_pkt[7 + url_len];
+    broker_pkt[0] = LORA_ESPECIAL_BYTE;
+    broker_pkt[1] = LORA_MSG_SET_BROKER;
+    memcpy(&broker_pkt[2], &token, sizeof(uint32_t));
+    broker_pkt[6] = url_len;
+    memcpy(&broker_pkt[7], nova_url, url_len);
+
+    ESP_LOGI(TAG, "[TESTE 2] Injetando pacote de Alteração de Broker...");
+    lora_process_packet(broker_pkt, sizeof(broker_pkt));
+
+    ESP_LOGI(TAG, "=== FIM DO TESTE ===");
 }
