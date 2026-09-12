@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "lora_receiver.h"
 #include "mqtt_client.h"
 #include "nvs_flash.h"
 #include "nvs_manager.h"
@@ -73,7 +74,7 @@ static void print_user_property(mqtt5_user_property_handle_t user_property) {
     }
 }
 
-/*
+/**
  * @brief Event handler registered to receive MQTT events
  *
  *  This function is called by the MQTT client event loop.
@@ -218,8 +219,8 @@ static QueueHandle_t s_sensor_evt_queue = NULL;
 static QueueHandle_t s_storage_queue = NULL;
 static volatile int64_t s_last_sensor_interrupt_time = 0;
 
-/*
- * @brief rotina de atendimento a interrupcao (ISR) vinculada ao GPIO 19
+/**
+ * @brief rotina de atendimento a interrupcao no GPIO48
  *
  * executada no contexto da ISR (alocada na IRAM)
  * aplica filtro de debounce nao-bloqueante baseado em temporizador de hardware
@@ -243,13 +244,11 @@ static void IRAM_ATTR sensor_gpio_isr_handler(void *arg) {
     }
 }
 
-/*
+/**
  * @brief Tarefa FreeRTOS vinculada ao Core 1 dedicada a processar eventos do
  * sensor e enviar para o Core 0
  */
 static void core1_sensor_task(void *pvParameters) {
-    // instala a ISR no core 1
-    gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
     gpio_isr_handler_add(SENSOR_E18_PIN, sensor_gpio_isr_handler, (void *)SENSOR_E18_PIN);
     uint32_t io_num;
     uint32_t detection_count = 0;
@@ -432,9 +431,17 @@ void app_main(void) {
 
     // inicia NVS
     ESP_ERROR_CHECK(nvs_manager_init());
+
+    // instala serviço de interrupção GPIO
+    ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_IRAM));
     // pega o bootcount
     uint32_t boot_count;
     nvs_manager_get_boot_count(&boot_count);
+
+    // inicia o rádio LoRa
+    ESP_ERROR_CHECK(lora_receiver_init());
+    // cria a tarefa para o core 0
+    ESP_ERROR_CHECK(lora_receiver_start_task());
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -469,7 +476,7 @@ void app_main(void) {
         ESP_LOGI(TAG, "Wi-Fi conectado com sucesso na inicializacao!");
     }
 
-    // Registra handler para manter o Wi-Fi sempre conectando em caso de queda
+    // registra handler para manter o Wi-Fi sempre conectando em caso de queda
     // futura
     esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &wifi_reconnect_handler, NULL, NULL);
 
