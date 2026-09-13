@@ -10,8 +10,17 @@
 static const char *TAG = "MQTT_MGR";
 static esp_mqtt_client_handle_t s_mqtt_client = NULL;
 static bool s_is_mqtt_connected = false;
+static uint16_t s_bench_id = 1;
 
-static esp_mqtt5_user_property_item_t user_property_arr[] = {{"board", "esp32s3"}, {"u", "user"}, {"p", "password"}};
+// buffers de tópicos dinâmicos por bancada
+static char s_topic_production[64];
+static char s_topic_status[64];
+static char s_lwt_msg[64];
+
+static esp_mqtt5_user_property_item_t user_property_arr[] = {
+    {"board", "esp32s3"},
+    {"app", "EdgeBench"},
+};
 
 #define USE_PROPERTY_ARR_SIZE (sizeof(user_property_arr) / sizeof(esp_mqtt5_user_property_item_t))
 
@@ -19,9 +28,6 @@ static esp_mqtt5_publish_property_config_t publish_property = {
     .payload_format_indicator = 1,
     .message_expiry_interval = 1000,
     .topic_alias = 0,
-    .response_topic = "/topic/test/response",
-    .correlation_data = "123456",
-    .correlation_data_len = 6,
 };
 
 static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) {
@@ -31,42 +37,68 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED: Broker conectado com sucesso!");
         s_is_mqtt_connected = true;
+
+        // publica status "online" no tópico de diagnóstico/status retido (QoS 1)
+        if (s_mqtt_client != NULL && strlen(s_topic_status) > 0) {
+            char status_payload[128];
+            snprintf(status_payload, sizeof(status_payload),
+                     "{\"bancada\": %u, \"status\": \"online\", \"uptime_s\": %lld}", s_bench_id,
+                     (long long)(esp_timer_get_time() / 1000000ULL));
+            esp_mqtt_client_publish(s_mqtt_client, s_topic_status, status_payload, 0, 1, 1);
+            ESP_LOGI(TAG, "Status de conexao da bancada %u publicado em %s", s_bench_id, s_topic_status);
+        }
         break;
+
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "MQTT_EVENT_DISCONNECTED: Desconectado do Broker.");
         s_is_mqtt_connected = false;
         break;
+
     case MQTT_EVENT_SUBSCRIBED:
         ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
         break;
     case MQTT_EVENT_UNSUBSCRIBED:
         ESP_LOGI(TAG, "MQTT_EVENT_UNSUBSCRIBED, msg_id=%d", event->msg_id);
         break;
+
     case MQTT_EVENT_PUBLISHED:
-        ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
+        ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED (PUBACK recebido), msg_id=%d", event->msg_id);
         break;
+
     case MQTT_EVENT_DATA:
         ESP_LOGI(TAG, "MQTT_EVENT_DATA: TOPIC=%.*s DATA=%.*s", event->topic_len, event->topic, event->data_len,
                  event->data);
         break;
+
     case MQTT_EVENT_ERROR:
         ESP_LOGE(TAG, "MQTT_EVENT_ERROR");
         if (event->error_handle && event->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT) {
             ESP_LOGE(TAG, "Erro de transporte TCP: 0x%x", event->error_handle->esp_tls_last_esp_err);
         }
         break;
+
     default:
         break;
     }
 }
 
-esp_err_t mqtt_manager_start(const char *broker_uri) {
+esp_err_t mqtt_manager_start(const char *broker_uri, uint16_t bench_id) {
     if (broker_uri == NULL || strlen(broker_uri) == 0) {
         ESP_LOGE(TAG, "URI do broker inválida");
         return ESP_ERR_INVALID_ARG;
     }
 
-    ESP_LOGI(TAG, "Iniciando cliente MQTT5 para o broker: %s", broker_uri);
+    s_bench_id = (bench_id > 0) ? bench_id : 1;
+
+    // configura os tópicos padronizados da bancada
+    snprintf(s_topic_production, sizeof(s_topic_production), "fabrica/bancada_%u/producao", s_bench_id);
+    snprintf(s_topic_status, sizeof(s_topic_status), "fabrica/bancada_%u/status", s_bench_id);
+    snprintf(s_lwt_msg, sizeof(s_lwt_msg), "{\"bancada\": %u, \"status\": \"offline\"}", s_bench_id);
+
+    ESP_LOGI(TAG, "Iniciando cliente MQTT5 para bancada %u:", s_bench_id);
+    ESP_LOGI(TAG, "  Broker: %s", broker_uri);
+    ESP_LOGI(TAG, "  Topico Producao: %s", s_topic_production);
+    ESP_LOGI(TAG, "  Topico Status/LWT: %s", s_topic_status);
 
     esp_mqtt5_connection_property_config_t connect_property = {
         .session_expiry_interval = 10,
@@ -87,9 +119,9 @@ esp_err_t mqtt_manager_start(const char *broker_uri) {
         .broker.address.uri = broker_uri,
         .session.protocol_ver = MQTT_PROTOCOL_V_5,
         .network.disable_auto_reconnect = false,
-        .session.last_will.topic = "/topic/will",
-        .session.last_will.msg = "EdgeBench disconnected",
-        .session.last_will.msg_len = 22,
+        .session.last_will.topic = s_topic_status,
+        .session.last_will.msg = s_lwt_msg,
+        .session.last_will.msg_len = strlen(s_lwt_msg),
         .session.last_will.qos = 1,
         .session.last_will.retain = true,
     };
@@ -133,27 +165,23 @@ esp_err_t mqtt_manager_publish_detection(const sensor_data_record_t *record, boo
                  (long long)(esp_timer_get_time() / 1000000ULL));
     }
 
+    // payload que será enviado ao mqtt contendo as informações do registro
     char payload[256];
-    if (offline) {
-        snprintf(payload, sizeof(payload),
-                 "{\"gpio\": %lu, \"contagem\": %lu, \"horario\": \"%s\", "
-                 "\"timestamp\": %lld, \"offline\": true}",
-                 (unsigned long)SENSOR_E18_PIN, (unsigned long)record->count, time_str, (long long)record->timestamp);
-    } else {
-        snprintf(payload, sizeof(payload),
-                 "{\"gpio\": %lu, \"contagem\": %lu, \"horario\": \"%s\", "
-                 "\"timestamp\": %lld}",
-                 (unsigned long)SENSOR_E18_PIN, (unsigned long)record->count, time_str, (long long)record->timestamp);
-    }
+    snprintf(payload, sizeof(payload),
+             "{\"bancada\": %u, \"contagem\": %lu, \"horario\": \"%s\", "
+             "\"timestamp\": %lld, \"quantidade\": 1, \"modo_offline\": %s}",
+             s_bench_id, (unsigned long)record->count, time_str, (long long)record->timestamp,
+             offline ? "true" : "false");
 
     esp_mqtt5_client_set_publish_property(s_mqtt_client, &publish_property);
-    int msg_id = esp_mqtt_client_publish(s_mqtt_client, "sensor/e18/contagem", payload, 0, 1, 0);
+    int msg_id = esp_mqtt_client_publish(s_mqtt_client, s_topic_production, payload, 0, 1, 0);
 
     if (msg_id != -1) {
-        ESP_LOGI(TAG, "Mensagem MQTT enviada com QoS 1, id: %d (offline: %s)", msg_id, offline ? "true" : "false");
+        ESP_LOGI(TAG, "Mensagem publicada em '%s' (QoS 1, id: %d, offline: %s)", s_topic_production, msg_id,
+                 offline ? "true" : "false");
         return ESP_OK;
     } else {
-        ESP_LOGE(TAG, "Falha ao publicar mensagem MQTT");
+        ESP_LOGE(TAG, "Falha ao publicar mensagem MQTT no topico %s", s_topic_production);
         return ESP_FAIL;
     }
 }

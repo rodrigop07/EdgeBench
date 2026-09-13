@@ -15,6 +15,7 @@
 #define LORA_MSG_TIME_BEACON 0x01 // comando para sincronizar horário
 #define LORA_MSG_SET_BROKER 0x02  // comando para atualizar url do broker mqtt
 #define LORA_MSG_SET_WIFI 0x03    // comando para atualizar ssid e senha da rede wifi
+#define LORA_MSG_SET_BENCH 0x04   // comando para atualizar o ID da bancada
 
 // token de segurança para autorizar mudança de Broker pelo ar
 #define LORA_SECURITY_TOKEN 0xABCD1234

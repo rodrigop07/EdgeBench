@@ -215,3 +215,74 @@ esp_err_t nvs_manager_set_wifi_credentials(const char *ssid, const char *pass) {
     nvs_close(handle);
     return err;
 }
+
+#ifndef CONFIG_BENCH_ID
+#define CONFIG_BENCH_ID 1
+#endif
+
+esp_err_t nvs_manager_get_bench_id(uint16_t *bench_id) {
+    if (bench_id == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // cria o handle para acessar a NVS
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Erro ao abrir NVS para ler bench_id (%s)", esp_err_to_name(err));
+        return err;
+    }
+
+    uint16_t id = 0;
+    err = nvs_get_u16(handle, "bench_id", &id);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        // se o bench_id não existir, usa o valor do CONFIG_BENCH_ID
+        id = (uint16_t)CONFIG_BENCH_ID;
+        ESP_LOGW(TAG, "bench_id não encontrado na NVS. Usando valor padrão: %u", id);
+        nvs_set_u16(handle, "bench_id", id);
+        nvs_commit(handle);
+        err = ESP_OK;
+    } else if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Erro ao ler 'bench_id' da NVS (%s)", esp_err_to_name(err));
+        nvs_close(handle);
+        return err;
+    }
+
+    *bench_id = id;
+    ESP_LOGI(TAG, "ID da Bancada carregado da NVS: %u", id);
+    nvs_close(handle);
+    return ESP_OK;
+}
+
+esp_err_t nvs_manager_set_bench_id(uint16_t bench_id) {
+    // valida o bench_id
+    if (bench_id <= 0) {
+        ESP_LOGE(TAG, "bench_id inválido (deve ser > 0)");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // cria o handle para acessar a NVS
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Erro ao abrir NVS para gravar bench_id (%s)", esp_err_to_name(err));
+        return err;
+    }
+
+    err = nvs_set_u16(handle, "bench_id", bench_id);
+    if (err == ESP_OK) {
+        // escreve o valor na flash
+        err = nvs_commit(handle);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "Novo ID da Bancada salvo na NVS: %u", bench_id);
+        } else {
+            ESP_LOGE(TAG, "Falha ao comitar bench_id na NVS (%s)", esp_err_to_name(err));
+        }
+    } else {
+        ESP_LOGE(TAG, "Falha ao gravar bench_id na NVS (%s)", esp_err_to_name(err));
+    }
+
+    // fecha o handle da NVS
+    nvs_close(handle);
+    return err;
+}

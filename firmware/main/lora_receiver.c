@@ -145,10 +145,37 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
         } else {
             ESP_LOGE(TAG, "Falha ao gravar Wi-Fi na NVS (%s)", esp_err_to_name(err));
         }
+    } else if (msg_type == LORA_MSG_SET_BENCH) {
+        // tamanho esperado: 1 byte especial + 1 byte tipo + 4 bytes token + 2 bytes bench_id = 8 bytes
+        if (length < 8) {
+            ESP_LOGW(TAG, "Pacote Set Bench com tamanho insuficiente (%d bytes)", (int)length);
+            return;
+        }
+
+        uint32_t token = 0;
+        memcpy(&token, &payload[2], sizeof(uint32_t));
+        if (token != LORA_SECURITY_TOKEN) {
+            ESP_LOGW(TAG, "Tentativa de configurar ID da Bancada rejeitada: Token inválido (0x%08lX)", (unsigned long)token);
+            return;
+        }
+
+        uint16_t novo_bench_id = 0;
+        memcpy(&novo_bench_id, &payload[6], sizeof(uint16_t));
+        ESP_LOGI(TAG, "Novo ID de Bancada recebido via LoRa: %u", novo_bench_id);
+
+        esp_err_t err = nvs_manager_set_bench_id(novo_bench_id);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "ID da Bancada atualizado na NVS com sucesso! Reiniciando em 2 segundos para aplicar novo topico...");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            esp_restart();
+        } else {
+            ESP_LOGE(TAG, "Falha ao gravar bench_id na NVS (%s)", esp_err_to_name(err));
+        }
     } else {
         ESP_LOGW(TAG, "Tipo de mensagem LoRa desconhecido (0x%02X)", msg_type);
     }
 }
+
 
 // função auxiliar para aguardar o rádio terminar de processar operações internas
 static void sx1262_wait_busy(void) {

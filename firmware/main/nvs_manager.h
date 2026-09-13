@@ -41,4 +41,18 @@ esp_err_t nvs_manager_get_wifi_credentials(char *out_ssid, size_t max_ssid_len, 
  */
 esp_err_t nvs_manager_set_wifi_credentials(const char *ssid, const char *pass);
 
+/**
+ * @brief recupera o identificador da bancada (bench_id) da NVS
+ * @param bench_id ponteiro para armazenar o ID da bancada
+ * @return ESP_OK em caso de sucesso
+ */
+esp_err_t nvs_manager_get_bench_id(uint16_t *bench_id);
+
+/**
+ * @brief salva o identificador da bancada (bench_id) na NVS
+ * @param bench_id novo ID da bancada
+ * @return ESP_OK em caso de sucesso
+ */
+esp_err_t nvs_manager_set_bench_id(uint16_t bench_id);
+
 #endif /* NVS_MANAGER_H */

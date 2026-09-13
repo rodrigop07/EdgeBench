@@ -61,6 +61,11 @@ void app_main(void) {
     nvs_manager_get_boot_count(&boot_count);
     ESP_LOGI(TAG, "Boot count atual: %" PRIu32, boot_count);
 
+    // lê e exibe o identificador da bancada
+    uint16_t bench_id = 1;
+    nvs_manager_get_bench_id(&bench_id);
+    ESP_LOGI(TAG, "ID da Bancada (EdgeBench): %u", bench_id);
+
     // inicializa o rádio LoRa (SX1262) e sua tarefa de escuta no Core 0
     ESP_ERROR_CHECK(lora_receiver_init());
     ESP_ERROR_CHECK(lora_receiver_start_task());
@@ -125,8 +130,8 @@ void app_main(void) {
     // inicializa e conecta o cliente MQTT 5 com o broker configurado na NVS
     char broker_uri[128];
     nvs_manager_get_broker_url(broker_uri, sizeof(broker_uri));
-    ESP_LOGI(TAG, "Iniciando cliente MQTT5 com broker NVS: %s", broker_uri);
-    ESP_ERROR_CHECK(mqtt_manager_start(broker_uri));
+    ESP_LOGI(TAG, "Iniciando cliente MQTT5 com broker NVS: %s (Bancada: %u)", broker_uri, bench_id);
+    ESP_ERROR_CHECK(mqtt_manager_start(broker_uri, bench_id));
 
     // simulação inicial do LoRa
     lora_receiver_test();
