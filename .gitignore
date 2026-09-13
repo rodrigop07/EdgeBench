@@ -93,3 +93,6 @@ Desktop.ini
 
 .clang-format
 .editorconfig
+/firmware/.cache/
+*.clangd
+/firmware_central/.cache/
