@@ -107,7 +107,41 @@ flowchart TD
 4. **Sincronização de Horário Resiliente:** Em operação normal, o microcontrolador sincroniza o relógio via SNTP. Em caso de quedas de energia simultâneas à indisponibilidade de rede, o rádio LoRa escuta o *Beacon* emitido pelo Gateway Central USB conectado ao servidor ininterrupto, restaurando a data/hora absoluta sem necessidade de baterias descartáveis.
 5. **Ingestão, Idempotência e Consolidação (Software Central):** O serviço em Python consome os tópicos MQTT com QoS 1, valida a chave única `(bancada_id, timestamp)` via SQLAlchemy para evitar duplicatas e persiste no banco de dados. Periodicamente, o script gera as planilhas consolidadas `.xlsx` por turno fabril (06h-14h, 14h-22h, 22h-06h).
 
+### 1.3 Conexão Elétrica: ESP32-S3 e Sensor Fotoelétrico E18-D80NK
+
+Diagrama direto de ligação entre o microcontrolador Heltec ESP32-S3 e o sensor de passagem E18-D80NK:
+
+```mermaid
+graph LR
+    subgraph SENSOR["Sensor Fotoelétrico E18-D80NK"]
+        VCC["Fio Marrom (VCC)"]
+        GND_S["Fio Azul (GND)"]
+        OUT["Fio Preto (Sinal OUT)"]
+    end
+
+    subgraph ESP32["Heltec ESP32-S3 LoRa"]
+        PIN_5V["Pino 5V"]
+        PIN_GND["Pino GND"]
+        PIN_GPIO48["GPIO 48 (Pull-Up Interno)"]
+    end
+
+    VCC -->|Alimentação 5V| PIN_5V
+    GND_S -->|Referência Comum| PIN_GND
+    OUT -->|Interrupção NEGEDGE| PIN_GPIO48
+```
+
+#### Mapeamento de Pinos e Fiação
+
+| Fio do Sensor E18-D80NK | Pino no ESP32-S3 | Descrição / Nível Lógico |
+| :--- | :--- | :--- |
+| **Marrom (VCC)** | **5V** | Alimentação positiva do sensor (5V DC) |
+| **Azul (GND)** | **GND** | Referência de terra comum |
+| **Preto (OUT)** | **GPIO 48** | Sinal digital NPN em coletor aberto (ativo em nível baixo `0V` na passagem da peça) |
+
+> **Nota de Proteção Elétrica:** O sensor E18-D80NK possui saída NPN em coletor aberto (atua chaveando para o terra). Com a ativação do pull-up interno do ESP32 (`GPIO_PULLUP_ENABLE`), a tensão no GPIO 48 varia com segurança estritamente entre **0V** (feixe cortado / peça detectada) e **3.3V** (em repouso), sem risco de sobretensão no microcontrolador.
+
 ---
+
 
 ## 2. Dependências e Recursos do Projeto
 
