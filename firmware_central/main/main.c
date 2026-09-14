@@ -36,8 +36,8 @@ static void beacon_broadcast_task(void *pvParameters) {
             ESP_LOGI(TAG, "[HEARTBEAT] Emitindo Beacon LoRa sincronizado: %s (Epoch: %lld)", time_str, (long long)now);
             lora_send_beacon((uint64_t)now);
         } else {
-            ESP_LOGW(TAG, "[HEARTBEAT] Relogio da Central ainda nao sincronizado pelo PC. Emitindo Beacon LoRa com uptime (%llds)...", (long long)now);
-            lora_send_beacon((uint64_t)now);
+            ESP_LOGW(TAG, "[HEARTBEAT] Relogio ainda nao sincronizado pelo PC (uptime: %llds). Beacon nao emitido.",
+                     (long long)now);
         }
 
         vTaskDelay(pdMS_TO_TICKS(BEACON_INTERVAL_MS));
@@ -46,7 +46,7 @@ static void beacon_broadcast_task(void *pvParameters) {
 
 void app_main(void) {
     ESP_LOGI(TAG, "=================================================");
-    ESP_LOGI(TAG, "   EdgeBench - Gateway Mestre LoRa USB Central   ");
+    ESP_LOGI(TAG, "   EdgeBench - ESP32S3 LoRa USB Central   ");
     ESP_LOGI(TAG, "   IDF: %s | Free Heap: %" PRIu32 " bytes        ", esp_get_idf_version(), esp_get_free_heap_size());
     ESP_LOGI(TAG, "=================================================");
 

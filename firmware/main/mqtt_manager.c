@@ -185,3 +185,53 @@ esp_err_t mqtt_manager_publish_detection(const sensor_data_record_t *record, boo
         return ESP_FAIL;
     }
 }
+
+esp_err_t mqtt_manager_set_broker(const char *broker_uri) {
+    if (broker_uri == NULL || strlen(broker_uri) == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_mqtt_client == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_LOGI(TAG, "Reconfigurando broker MQTT a quente para: %s", broker_uri);
+    s_is_mqtt_connected = false;
+    esp_mqtt_client_stop(s_mqtt_client);
+
+    esp_err_t ret = esp_mqtt_client_set_uri(s_mqtt_client, broker_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Falha ao definir nova URI no cliente MQTT (%s)", esp_err_to_name(ret));
+        return ret;
+    }
+
+    return esp_mqtt_client_start(s_mqtt_client);
+}
+
+esp_err_t mqtt_manager_set_bench_id(uint16_t bench_id) {
+    if (bench_id == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    s_bench_id = bench_id;
+
+    // atualiza tópicos
+    snprintf(s_topic_production, sizeof(s_topic_production), "fabrica/bancada_%u/producao", s_bench_id);
+    snprintf(s_topic_status, sizeof(s_topic_status), "fabrica/bancada_%u/status", s_bench_id);
+    snprintf(s_lwt_msg, sizeof(s_lwt_msg), "{\"bancada\": %u, \"status\": \"offline\"}", s_bench_id);
+
+    ESP_LOGI(TAG, "ID da Bancada atualizado a quente para %u:", s_bench_id);
+    ESP_LOGI(TAG, "  Novo Topico Producao: %s", s_topic_production);
+    ESP_LOGI(TAG, "  Novo Topico Status: %s", s_topic_status);
+
+    // se estiver conectado, publica status de transicao no novo tópico retido
+    if (s_mqtt_client != NULL && s_is_mqtt_connected) {
+        char status_payload[128];
+        snprintf(status_payload, sizeof(status_payload),
+                 "{\"bancada\": %u, \"status\": \"online\", \"uptime_s\": %lld}", s_bench_id,
+                 (long long)(esp_timer_get_time() / 1000000ULL));
+        esp_mqtt_client_publish(s_mqtt_client, s_topic_status, status_payload, 0, 1, 1);
+    }
+
+    return ESP_OK;
+}
+

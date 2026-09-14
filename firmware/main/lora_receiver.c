@@ -4,7 +4,9 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "mqtt_manager.h"
 #include "nvs_manager.h"
+#include "wifi_manager.h"
 #include <string.h>
 #include <sys/time.h>
 
@@ -42,12 +44,17 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
         uint64_t epoch = 0;
         memcpy(&epoch, &payload[2], sizeof(uint64_t));
 
-        // estrutura de tempo
-        struct timeval tv = {.tv_sec = (time_t)epoch, .tv_usec = 0};
+        // valida se o epoch é válido (ano >= 2024 / 1704067200 epoch)
+        if (epoch >= 1704067200ULL) {
+            // estrutura de tempo
+            struct timeval tv = {.tv_sec = (time_t)epoch, .tv_usec = 0};
 
-        // ajusta o relógio interno do esp
-        settimeofday(&tv, NULL);
-        ESP_LOGI(TAG, "Horário sincronizado com sucesso via Beacon LoRa (Epoch: %llu)", (unsigned long long)epoch);
+            // ajusta o relógio interno do esp
+            settimeofday(&tv, NULL);
+            ESP_LOGI(TAG, "Horário sincronizado com sucesso via Beacon LoRa (Epoch: %llu)", (unsigned long long)epoch);
+        } else {
+            ESP_LOGW(TAG, "Beacon LoRa descartado: Epoch não calibrado pela Central (%llu)", (unsigned long long)epoch);
+        }
     } else if (msg_type == LORA_MSG_SET_BROKER) {
         // trata pacote de atualização da URL do Broker
         // tamanho esperado: 1 byte especial + 1 byte tipo + 4 bytes token + 1 byte tamanho_url = 7 bytes mínimos
@@ -84,7 +91,8 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
         // grava a nova url na NVS
         esp_err_t err = nvs_manager_set_broker_url(nova_url);
         if (err == ESP_OK) {
-            ESP_LOGI(TAG, "Broker atualizado na NVS com sucesso!");
+            ESP_LOGI(TAG, "Broker atualizado na NVS com sucesso, aplicando nova URL...");
+            mqtt_manager_set_broker(nova_url);
         } else {
             ESP_LOGE(TAG, "Falha ao gravar URL Broker na NVS (%s)", esp_err_to_name(err));
         }
@@ -134,14 +142,13 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
             memcpy(nova_senha, &payload[pass_offset + 1], pass_len);
         }
         nova_senha[pass_len] = '\0';
-        ESP_LOGI(TAG, "Novas credenciais Wi-Fi recebidas via LoRa! SSID: %s", novo_ssid);
+        ESP_LOGI(TAG, "Novas credenciais Wi-Fi recebidas via LoRa, SSID: %s", novo_ssid);
 
-        // grava na NVS
+        // grava na NVS e reconecta sem reiniciar
         esp_err_t err = nvs_manager_set_wifi_credentials(novo_ssid, nova_senha);
         if (err == ESP_OK) {
-            ESP_LOGI(TAG, "Wi-Fi atualizado na Flash! Reiniciando em 2 segundos para conectar na nova rede...");
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            esp_restart();
+            ESP_LOGI(TAG, "Wi-Fi atualizado na Flash, novo SSID: '%s'...", novo_ssid);
+            wifi_manager_reconfigure(novo_ssid, nova_senha);
         } else {
             ESP_LOGE(TAG, "Falha ao gravar Wi-Fi na NVS (%s)", esp_err_to_name(err));
         }
@@ -155,7 +162,8 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
         uint32_t token = 0;
         memcpy(&token, &payload[2], sizeof(uint32_t));
         if (token != LORA_SECURITY_TOKEN) {
-            ESP_LOGW(TAG, "Tentativa de configurar ID da Bancada rejeitada: Token inválido (0x%08lX)", (unsigned long)token);
+            ESP_LOGW(TAG, "Tentativa de configurar ID da Bancada rejeitada: Token inválido (0x%08lX)",
+                     (unsigned long)token);
             return;
         }
 
@@ -163,11 +171,11 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
         memcpy(&novo_bench_id, &payload[6], sizeof(uint16_t));
         ESP_LOGI(TAG, "Novo ID de Bancada recebido via LoRa: %u", novo_bench_id);
 
+        // grava na NVS e atualiza topicos sem reiniciar
         esp_err_t err = nvs_manager_set_bench_id(novo_bench_id);
         if (err == ESP_OK) {
-            ESP_LOGI(TAG, "ID da Bancada atualizado na NVS com sucesso! Reiniciando em 2 segundos para aplicar novo topico...");
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            esp_restart();
+            ESP_LOGI(TAG, "ID da Bancada atualizado na NVS com sucesso! Aplicando ID %u...", novo_bench_id);
+            mqtt_manager_set_bench_id(novo_bench_id);
         } else {
             ESP_LOGE(TAG, "Falha ao gravar bench_id na NVS (%s)", esp_err_to_name(err));
         }
@@ -175,7 +183,6 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
         ESP_LOGW(TAG, "Tipo de mensagem LoRa desconhecido (0x%02X)", msg_type);
     }
 }
-
 
 // opcodes de comando do transceptor SX1262
 #define SX126X_CMD_SET_STANDBY 0x80
@@ -271,9 +278,7 @@ static esp_err_t sx1262_clear_irq_status(uint16_t irq_mask) {
  * @brief coloca o SX1262 em modo de recepção contínua ou temporizada
  */
 static esp_err_t sx1262_set_rx(uint32_t timeout) {
-    uint8_t data[3] = {(uint8_t)((timeout >> 16) & 0xFF),
-                       (uint8_t)((timeout >> 8) & 0xFF),
-                       (uint8_t)(timeout & 0xFF)};
+    uint8_t data[3] = {(uint8_t)((timeout >> 16) & 0xFF), (uint8_t)((timeout >> 8) & 0xFF), (uint8_t)(timeout & 0xFF)};
     return sx1262_write_command(SX126X_CMD_SET_RX, data, 3);
 }
 
@@ -467,7 +472,8 @@ esp_err_t lora_receiver_init(void) {
     uint8_t mod_params[4] = {0x07, 0x04, 0x01, 0x00};
     sx1262_write_command(SX126X_CMD_SET_MODULATION_PARAMS, mod_params, 4);
 
-    // parâmetros do pacote: preâmbulo 8 (0x0008), header explícito (0x00), max len 255 (0xFF), CRC on (0x01), invert IQ padrão (0x00)
+    // parâmetros do pacote: preâmbulo 8 (0x0008), header explícito (0x00), max len 255 (0xFF), CRC on (0x01), invert IQ
+    // padrão (0x00)
     uint8_t pkt_params[6] = {0x00, 0x08, 0x00, 0xFF, 0x01, 0x00};
     sx1262_write_command(SX126X_CMD_SET_PACKET_PARAMS, pkt_params, 6);
 
