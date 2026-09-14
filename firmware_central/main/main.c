@@ -29,15 +29,15 @@ static void beacon_broadcast_task(void *pvParameters) {
         struct tm timeinfo;
         localtime_r(&now, &timeinfo);
 
-        // se o relógio foi sincronizado pelo PC (ano >= 2024), emite o beacon
+        // se o relógio foi sincronizado pelo PC (ano >= 2024), emite o beacon com hora real
         if (timeinfo.tm_year >= (2024 - 1900)) {
             char time_str[32];
             strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &timeinfo);
-            ESP_LOGI(TAG, "[HEARTBEAT] Emitindo Beacon LoRa: %s (Epoch: %lld)", time_str, (long long)now);
+            ESP_LOGI(TAG, "[HEARTBEAT] Emitindo Beacon LoRa sincronizado: %s (Epoch: %lld)", time_str, (long long)now);
             lora_send_beacon((uint64_t)now);
         } else {
-            ESP_LOGW(TAG, "[HEARTBEAT] Relogio da Central ainda nao sincronizado pelo PC via Serial. Aguardando "
-                          "comando 'sync_time'...");
+            ESP_LOGW(TAG, "[HEARTBEAT] Relogio da Central ainda nao sincronizado pelo PC. Emitindo Beacon LoRa com uptime (%llds)...", (long long)now);
+            lora_send_beacon((uint64_t)now);
         }
 
         vTaskDelay(pdMS_TO_TICKS(BEACON_INTERVAL_MS));

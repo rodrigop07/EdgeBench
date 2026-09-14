@@ -122,6 +122,8 @@ class EdgeBenchGateway:
 
         line_to_send = json.dumps(cmd_dict) + "\n"
         try:
+            if hasattr(self.ser, "reset_input_buffer"):
+                self.ser.reset_input_buffer()
             self.ser.write(line_to_send.encode("utf-8"))
             self.ser.flush()
             logger.debug(f"TX Serial -> {line_to_send.strip()}")

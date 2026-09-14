@@ -177,6 +177,26 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
 }
 
 
+// opcodes de comando do transceptor SX1262
+#define SX126X_CMD_SET_STANDBY 0x80
+#define SX126X_CMD_SET_RX 0x82
+#define SX126X_CMD_SET_PACKET_TYPE 0x8A
+#define SX126X_CMD_SET_RF_FREQUENCY 0x86
+#define SX126X_CMD_SET_REGULATOR_MODE 0x96
+#define SX126X_CMD_SET_BUFFER_BASE_ADDR 0x8F
+#define SX126X_CMD_SET_MODULATION_PARAMS 0x8B
+#define SX126X_CMD_SET_PACKET_PARAMS 0x8C
+#define SX126X_CMD_SET_DIO_IRQ_PARAMS 0x08
+#define SX126X_CMD_GET_IRQ_STATUS 0x12
+#define SX126X_CMD_CLEAR_IRQ_STATUS 0x02
+#define SX126X_CMD_SET_DIO2_AS_RF_SWITCH 0x9D
+#define SX126X_CMD_SET_DIO3_AS_TCXO_CTRL 0x97
+#define SX126X_CMD_CALIBRATE 0x89
+#define SX126X_CMD_CALIBRATE_IMAGE 0x98
+#define SX126X_CMD_GET_RX_BUFFER_STATUS 0x13
+#define SX126X_CMD_READ_BUFFER 0x1E
+#define LORA_PIN_VEXT 36
+
 // função auxiliar para aguardar o rádio terminar de processar operações internas
 static void sx1262_wait_busy(void) {
     int timeout_ms = 1000;
@@ -187,6 +207,138 @@ static void sx1262_wait_busy(void) {
     if (timeout_ms <= 0) {
         ESP_LOGE(TAG, "Timeout aguardando pino BUSY do SX1262");
     }
+}
+
+/**
+ * @brief envia comando SPI para o chip SX1262
+ */
+static esp_err_t sx1262_write_command(uint8_t opcode, const uint8_t *data, size_t length) {
+    sx1262_wait_busy();
+
+    spi_transaction_t t;
+    memset(&t, 0, sizeof(t));
+
+    uint8_t tx_buf[64];
+    tx_buf[0] = opcode;
+    if (data != NULL && length > 0) {
+        if (length + 1 > sizeof(tx_buf)) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        memcpy(&tx_buf[1], data, length);
+    }
+
+    t.length = (1 + length) * 8;
+    t.tx_buffer = tx_buf;
+
+    esp_err_t ret = spi_device_transmit(s_lora_spi, &t);
+    sx1262_wait_busy();
+    return ret;
+}
+
+/**
+ * @brief consulta o status de interrupções (IRQ) do SX1262
+ */
+static uint16_t sx1262_get_irq_status(void) {
+    sx1262_wait_busy();
+
+    spi_transaction_t t;
+    memset(&t, 0, sizeof(t));
+
+    uint8_t tx_buf[4] = {SX126X_CMD_GET_IRQ_STATUS, 0x00, 0x00, 0x00};
+    uint8_t rx_buf[4] = {0};
+
+    t.length = 4 * 8;
+    t.tx_buffer = tx_buf;
+    t.rx_buffer = rx_buf;
+
+    esp_err_t ret = spi_device_transmit(s_lora_spi, &t);
+    sx1262_wait_busy();
+    if (ret != ESP_OK) {
+        return 0;
+    }
+    return ((uint16_t)rx_buf[2] << 8) | rx_buf[3];
+}
+
+/**
+ * @brief limpa flags de interrupção no SX1262
+ */
+static esp_err_t sx1262_clear_irq_status(uint16_t irq_mask) {
+    uint8_t data[2] = {(uint8_t)(irq_mask >> 8), (uint8_t)(irq_mask & 0xFF)};
+    return sx1262_write_command(SX126X_CMD_CLEAR_IRQ_STATUS, data, 2);
+}
+
+/**
+ * @brief coloca o SX1262 em modo de recepção contínua ou temporizada
+ */
+static esp_err_t sx1262_set_rx(uint32_t timeout) {
+    uint8_t data[3] = {(uint8_t)((timeout >> 16) & 0xFF),
+                       (uint8_t)((timeout >> 8) & 0xFF),
+                       (uint8_t)(timeout & 0xFF)};
+    return sx1262_write_command(SX126X_CMD_SET_RX, data, 3);
+}
+
+/**
+ * @brief obtém comprimento e offset do pacote recebido no buffer FIFO
+ */
+static esp_err_t sx1262_get_rx_buffer_status(uint8_t *out_payload_len, uint8_t *out_rx_start_ptr) {
+    sx1262_wait_busy();
+
+    spi_transaction_t t;
+    memset(&t, 0, sizeof(t));
+
+    uint8_t tx_buf[4] = {SX126X_CMD_GET_RX_BUFFER_STATUS, 0x00, 0x00, 0x00};
+    uint8_t rx_buf[4] = {0};
+
+    t.length = 4 * 8;
+    t.tx_buffer = tx_buf;
+    t.rx_buffer = rx_buf;
+
+    esp_err_t ret = spi_device_transmit(s_lora_spi, &t);
+    sx1262_wait_busy();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    if (out_payload_len != NULL) {
+        *out_payload_len = rx_buf[2];
+    }
+    if (out_rx_start_ptr != NULL) {
+        *out_rx_start_ptr = rx_buf[3];
+    }
+    return ESP_OK;
+}
+
+/**
+ * @brief lê dados da FIFO do SX1262 via SPI
+ */
+static esp_err_t sx1262_read_buffer(uint8_t offset, uint8_t *data, size_t length) {
+    if (data == NULL || length == 0 || length > 255) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    sx1262_wait_busy();
+
+    size_t total_len = 3 + length;
+    uint8_t tx_buf[259];
+    uint8_t rx_buf[259];
+    memset(tx_buf, 0, total_len);
+    memset(rx_buf, 0, total_len);
+
+    tx_buf[0] = SX126X_CMD_READ_BUFFER;
+    tx_buf[1] = offset;
+    tx_buf[2] = 0x00; // NOP dummy
+
+    spi_transaction_t t;
+    memset(&t, 0, sizeof(t));
+    t.length = total_len * 8;
+    t.tx_buffer = tx_buf;
+    t.rx_buffer = rx_buf;
+
+    esp_err_t ret = spi_device_transmit(s_lora_spi, &t);
+    sx1262_wait_busy();
+    if (ret == ESP_OK) {
+        memcpy(data, &rx_buf[3], length);
+    }
+    return ret;
 }
 
 // rotina de interrupção disparada na borda de subida do pino DIO1 (GPIO 14)
@@ -218,16 +370,19 @@ esp_err_t lora_receiver_init(void) {
     // registra a ISR para o pino DIO1
     gpio_isr_handler_add(LORA_PIN_DIO1, lora_dio1_isr_handler, NULL);
 
-    // configura os pinos GPIO de controle: RST (saída), BUSY (entrada), DIO1 (entrada)
+    // configura os pinos GPIO de controle: RST (saída), VEXT (saída), BUSY (entrada)
     gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << LORA_PIN_RST),
+        .pin_bit_mask = (1ULL << LORA_PIN_RST) | (1ULL << LORA_PIN_VEXT),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
-
     gpio_config(&io_conf);
+
+    // ativa alimentação de periféricos/rádio no Heltec V3 (Vext ativo em nível baixo)
+    gpio_set_level(LORA_PIN_VEXT, 0);
+
     io_conf.pin_bit_mask = (1ULL << LORA_PIN_BUSY);
     io_conf.mode = GPIO_MODE_INPUT;
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
@@ -271,7 +426,62 @@ esp_err_t lora_receiver_init(void) {
 
     // aguarda o chip sair do estado ocupado
     sx1262_wait_busy();
-    ESP_LOGI(TAG, "Hardware do SX1262 inicializado com sucesso!");
+
+    // coloca em Standby RC
+    uint8_t standby_mode = 0x00;
+    sx1262_write_command(SX126X_CMD_SET_STANDBY, &standby_mode, 1);
+
+    // ativa regulador interno DC-DC
+    uint8_t reg_mode = 0x01;
+    sx1262_write_command(SX126X_CMD_SET_REGULATOR_MODE, &reg_mode, 1);
+
+    // configura DIO3 para alimentar o oscilador TCXO a 1.8V com delay de 10ms (CRÍTICO para Heltec V3!)
+    uint8_t tcxo_params[4] = {0x02, 0x00, 0x02, 0x80};
+    sx1262_write_command(SX126X_CMD_SET_DIO3_AS_TCXO_CTRL, tcxo_params, 4);
+
+    // executa calibração interna de todos os blocos com o clock TCXO ativo
+    uint8_t calib_param = 0x7F;
+    sx1262_write_command(SX126X_CMD_CALIBRATE, &calib_param, 1);
+
+    // calibra rejeição de imagem para a faixa 902-928 MHz (faixa do 915 MHz)
+    uint8_t calib_img[2] = {0xE1, 0xE9};
+    sx1262_write_command(SX126X_CMD_CALIBRATE_IMAGE, calib_img, 2);
+
+    // configura DIO2 para chavear a antena RF
+    uint8_t dio2_switch = 0x01;
+    sx1262_write_command(SX126X_CMD_SET_DIO2_AS_RF_SWITCH, &dio2_switch, 1);
+
+    // tipo de pacote: LoRa (0x01)
+    uint8_t pkt_type = 0x01;
+    sx1262_write_command(SX126X_CMD_SET_PACKET_TYPE, &pkt_type, 1);
+
+    // frequência RF: 915 MHz (0x39300000)
+    uint8_t rf_freq[4] = {0x39, 0x30, 0x00, 0x00};
+    sx1262_write_command(SX126X_CMD_SET_RF_FREQUENCY, rf_freq, 4);
+
+    // buffer base: TxBase=0x00, RxBase=0x00
+    uint8_t buf_base[2] = {0x00, 0x00};
+    sx1262_write_command(SX126X_CMD_SET_BUFFER_BASE_ADDR, buf_base, 2);
+
+    // modulação: SF7 (0x07), BW 125kHz (0x04), CR 4/5 (0x01), LDRO off (0x00)
+    uint8_t mod_params[4] = {0x07, 0x04, 0x01, 0x00};
+    sx1262_write_command(SX126X_CMD_SET_MODULATION_PARAMS, mod_params, 4);
+
+    // parâmetros do pacote: preâmbulo 8 (0x0008), header explícito (0x00), max len 255 (0xFF), CRC on (0x01), invert IQ padrão (0x00)
+    uint8_t pkt_params[6] = {0x00, 0x08, 0x00, 0xFF, 0x01, 0x00};
+    sx1262_write_command(SX126X_CMD_SET_PACKET_PARAMS, pkt_params, 6);
+
+    // configura interrupção DIO1 para RxDone (0x0002)
+    uint8_t irq_params[8] = {0x03, 0xFF, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00};
+    sx1262_write_command(SX126X_CMD_SET_DIO_IRQ_PARAMS, irq_params, 8);
+
+    // limpa flags residuais
+    sx1262_clear_irq_status(0x03FF);
+
+    // coloca em modo de recepção contínua (0xFFFFFF)
+    sx1262_set_rx(0xFFFFFF);
+
+    ESP_LOGI(TAG, "Hardware do SX1262 inicializado e em modo de escuta continua (915 MHz, SF7, BW125)!");
     return ESP_OK;
 }
 
@@ -282,15 +492,28 @@ static void lora_rx_task(void *pvParameters) {
     uint8_t rx_buffer[256];
 
     while (1) {
-        // trava a tarefa até receber interrupção
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        // aguarda notificação da ISR (DIO1) com timeout de 1 segundo para segurança
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
 
-        ESP_LOGI(TAG, "Pacote recebido");
-
-        size_t bytes_recebidos = 0;
-        // (Leitura SPI dos bytes do SX1262)
-        if (bytes_recebidos > 0) {
-            lora_process_packet(rx_buffer, bytes_recebidos);
+        uint16_t irq = sx1262_get_irq_status();
+        if (irq & 0x0002) { // RxDone
+            uint8_t payload_len = 0;
+            uint8_t rx_start_ptr = 0;
+            if (sx1262_get_rx_buffer_status(&payload_len, &rx_start_ptr) == ESP_OK && payload_len > 0) {
+                if (sx1262_read_buffer(rx_start_ptr, rx_buffer, payload_len) == ESP_OK) {
+                    ESP_LOGI(TAG, "Pacote LoRa recebido via RF! Tamanho: %u bytes", payload_len);
+                    lora_process_packet(rx_buffer, payload_len);
+                }
+            }
+            sx1262_clear_irq_status(0x03FF);
+            // garante retorno ao modo de escuta contínua
+            sx1262_set_rx(0xFFFFFF);
+        } else if (irq & 0x0040) { // CrcErr
+            ESP_LOGW(TAG, "Pacote recebido descartado: Erro de CRC de RF");
+            sx1262_clear_irq_status(0x03FF);
+            sx1262_set_rx(0xFFFFFF);
+        } else if (irq != 0) {
+            sx1262_clear_irq_status(irq);
         }
     }
 }

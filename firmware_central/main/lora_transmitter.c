@@ -26,7 +26,11 @@ static spi_device_handle_t s_lora_spi = NULL;
 #define SX126X_CMD_GET_IRQ_STATUS 0x12
 #define SX126X_CMD_CLEAR_IRQ_STATUS 0x02
 #define SX126X_CMD_SET_DIO2_AS_RF_SWITCH 0x9D
+#define SX126X_CMD_SET_DIO3_AS_TCXO_CTRL 0x97
+#define SX126X_CMD_CALIBRATE 0x89
+#define SX126X_CMD_CALIBRATE_IMAGE 0x98
 #define SX126X_CMD_WRITE_BUFFER 0x0E
+#define LORA_PIN_VEXT 36
 
 /**
  * @brief aguarda o chip SX1262 liberar o pino BUSY
@@ -90,18 +94,45 @@ static esp_err_t sx1262_write_buffer(uint8_t offset, const uint8_t *data, size_t
     return ret;
 }
 
+/**
+ * @brief consulta o status de interrupções (IRQ) do SX1262
+ */
+static uint16_t sx1262_get_irq_status(void) {
+    sx1262_wait_busy();
+
+    spi_transaction_t t;
+    memset(&t, 0, sizeof(t));
+
+    uint8_t tx_buf[4] = {SX126X_CMD_GET_IRQ_STATUS, 0x00, 0x00, 0x00};
+    uint8_t rx_buf[4] = {0};
+
+    t.length = 4 * 8;
+    t.tx_buffer = tx_buf;
+    t.rx_buffer = rx_buf;
+
+    esp_err_t ret = spi_device_transmit(s_lora_spi, &t);
+    sx1262_wait_busy();
+    if (ret != ESP_OK) {
+        return 0;
+    }
+    return ((uint16_t)rx_buf[2] << 8) | rx_buf[3];
+}
+
 esp_err_t lora_transmitter_init(void) {
     ESP_LOGI(TAG, "Inicializando transceptor LoRa SX1262 para transmissao (915 MHz)...");
 
     // configuração dos pinos GPIO de controle
     gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << LORA_PIN_RST),
+        .pin_bit_mask = (1ULL << LORA_PIN_RST) | (1ULL << LORA_PIN_VEXT),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&io_conf);
+
+    // ativa alimentação de periféricos/rádio no Heltec V3 (Vext ativo em nível baixo)
+    gpio_set_level(LORA_PIN_VEXT, 0);
 
     io_conf.pin_bit_mask = (1ULL << LORA_PIN_BUSY) | (1ULL << LORA_PIN_DIO1);
     io_conf.mode = GPIO_MODE_INPUT;
@@ -153,6 +184,18 @@ esp_err_t lora_transmitter_init(void) {
     // ativa regulador interno DC-DC
     uint8_t reg_mode = 0x01;
     sx1262_write_command(SX126X_CMD_SET_REGULATOR_MODE, &reg_mode, 1);
+
+    // configura DIO3 para alimentar o oscilador TCXO a 1.8V com delay de 10ms (CRÍTICO para Heltec V3!)
+    uint8_t tcxo_params[4] = {0x02, 0x00, 0x02, 0x80};
+    sx1262_write_command(SX126X_CMD_SET_DIO3_AS_TCXO_CTRL, tcxo_params, 4);
+
+    // calibração de todos os blocos internos com o clock TCXO ativo
+    uint8_t calib_param = 0x7F;
+    sx1262_write_command(SX126X_CMD_CALIBRATE, &calib_param, 1);
+
+    // calibração de rejeição de imagem para 902-928 MHz (faixa do 915 MHz)
+    uint8_t calib_img[2] = {0xE1, 0xE9};
+    sx1262_write_command(SX126X_CMD_CALIBRATE_IMAGE, calib_img, 2);
 
     // configura DIO2 para chavear a antena RF
     uint8_t dio2_switch = 0x01;
@@ -215,19 +258,28 @@ esp_err_t lora_send_packet(const uint8_t *payload, size_t length) {
     uint8_t tx_timeout[3] = {0x02, 0xEE, 0x00};
     sx1262_write_command(SX126X_CMD_SET_TX, tx_timeout, 3);
 
-    // aguarda a conclusão da transmissão (pino BUSY vai para zero ou timeout)
+    // aguarda a conclusão da transmissão via TxDone (bit 0 = 0x0001) ou pino DIO1
     int wait_ms = 3000;
-    while (gpio_get_level(LORA_PIN_BUSY) == 1 && wait_ms > 0) {
-        vTaskDelay(pdMS_TO_TICKS(5));
-        wait_ms -= 5;
+    bool tx_done = false;
+    while (wait_ms > 0) {
+        uint16_t irq = sx1262_get_irq_status();
+        if (irq & 0x0001) { // TxDone
+            tx_done = true;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+        wait_ms -= 10;
     }
 
-    if (wait_ms <= 0) {
-        ESP_LOGW(TAG, "Aviso: Timeout aguardando conclusao da transmissao LoRa");
+    // limpa flags
+    sx1262_write_command(SX126X_CMD_CLEAR_IRQ_STATUS, clear_irq, 2);
+
+    if (!tx_done) {
+        ESP_LOGW(TAG, "Aviso: Timeout aguardando TxDone da transmissao LoRa");
         return ESP_ERR_TIMEOUT;
     }
 
-    ESP_LOGI(TAG, "Pacote LoRa (%d bytes, tipo: 0x%02X) transmitido com sucesso!", (int)length, payload[1]);
+    ESP_LOGI(TAG, "Pacote LoRa (%d bytes, tipo: 0x%02X) transmitido com sucesso via RF!", (int)length, payload[1]);
     return ESP_OK;
 }
 

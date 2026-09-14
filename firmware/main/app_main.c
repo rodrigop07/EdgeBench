@@ -132,7 +132,4 @@ void app_main(void) {
     nvs_manager_get_broker_url(broker_uri, sizeof(broker_uri));
     ESP_LOGI(TAG, "Iniciando cliente MQTT5 com broker NVS: %s (Bancada: %u)", broker_uri, bench_id);
     ESP_ERROR_CHECK(mqtt_manager_start(broker_uri, bench_id));
-
-    // simulação inicial do LoRa
-    lora_receiver_test();
 }
