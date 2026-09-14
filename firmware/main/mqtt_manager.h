@@ -29,6 +29,16 @@ bool mqtt_manager_is_connected(void);
 esp_err_t mqtt_manager_publish_detection(const sensor_data_record_t *record, bool offline);
 
 /**
+ * @brief publica um registro de peça aguardando confirmação PUBACK do broker
+ * @param record ponteiro para a struct sensor_data_record_t
+ * @param offline true se é um dado lido da Flash, false se é em tempo real
+ * @param timeout_ticks tempo máximo de espera pela confirmação PUBACK
+ * @return ESP_OK se confirmado com sucesso pelo broker, erro caso contrário
+ */
+esp_err_t mqtt_manager_publish_detection_sync(const sensor_data_record_t *record, bool offline,
+                                              TickType_t timeout_ticks);
+
+/**
  * @brief reconfigura a URI do broker MQTT sem reiniciar o esp32
  * @param broker_uri Nova URL do broker MQTT (ex: mqtt://192.168.1.100:1883)
  * @return ESP_OK em caso de sucesso

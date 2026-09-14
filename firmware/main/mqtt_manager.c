@@ -1,6 +1,8 @@
 #include "mqtt_manager.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "mqtt_client.h"
 #include <inttypes.h>
 #include <stdio.h>
@@ -11,6 +13,10 @@ static const char *TAG = "MQTT_MGR";
 static esp_mqtt_client_handle_t s_mqtt_client = NULL;
 static bool s_is_mqtt_connected = false;
 static uint16_t s_bench_id = 1;
+
+// controle de two way ACK (confirmação PUBACK com timeout)
+static SemaphoreHandle_t s_puback_sem = NULL;
+static volatile int s_pending_puback_msg_id = -1;
 
 // buffers de tópicos dinâmicos por bancada
 static char s_topic_production[64];
@@ -52,6 +58,10 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "MQTT_EVENT_DISCONNECTED: Desconectado do Broker.");
         s_is_mqtt_connected = false;
+        if (s_puback_sem != NULL && s_pending_puback_msg_id != -1) {
+            s_pending_puback_msg_id = -1;
+            xSemaphoreGive(s_puback_sem);
+        }
         break;
 
     case MQTT_EVENT_SUBSCRIBED:
@@ -63,6 +73,10 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
 
     case MQTT_EVENT_PUBLISHED:
         ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED (PUBACK recebido), msg_id=%d", event->msg_id);
+        if (s_puback_sem != NULL && event->msg_id == s_pending_puback_msg_id) {
+            s_pending_puback_msg_id = -1;
+            xSemaphoreGive(s_puback_sem);
+        }
         break;
 
     case MQTT_EVENT_DATA:
@@ -235,3 +249,62 @@ esp_err_t mqtt_manager_set_bench_id(uint16_t bench_id) {
     return ESP_OK;
 }
 
+esp_err_t mqtt_manager_publish_detection_sync(const sensor_data_record_t *record, bool offline,
+                                              TickType_t timeout_ticks) {
+    if (s_mqtt_client == NULL || !s_is_mqtt_connected) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (s_puback_sem == NULL) {
+        s_puback_sem = xSemaphoreCreateBinary();
+        if (s_puback_sem == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+    } else {
+        xSemaphoreTake(s_puback_sem, 0); // limpa qualquer token residual anterior
+    }
+
+    struct tm timeinfo;
+    char time_str[64];
+    time_t ts = record->timestamp;
+    localtime_r(&ts, &timeinfo);
+
+    if (timeinfo.tm_year >= (2024 - 1900)) {
+        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &timeinfo);
+    } else {
+        snprintf(time_str, sizeof(time_str), "Nao sincronizado (uptime %llds)",
+                 (long long)(esp_timer_get_time() / 1000000ULL));
+    }
+
+    char payload[256];
+    snprintf(payload, sizeof(payload),
+             "{\"bancada\": %u, \"contagem\": %lu, \"horario\": \"%s\", "
+             "\"timestamp\": %lld, \"quantidade\": 1, \"modo_offline\": %s}",
+             s_bench_id, (unsigned long)record->count, time_str, (long long)record->timestamp,
+             offline ? "true" : "false");
+
+    esp_mqtt5_client_set_publish_property(s_mqtt_client, &publish_property);
+    int msg_id = esp_mqtt_client_publish(s_mqtt_client, s_topic_production, payload, 0, 1, 0);
+
+    if (msg_id == -1) {
+        ESP_LOGE(TAG, "Falha ao enfileirar mensagem de replay offline no MQTT");
+        return ESP_FAIL;
+    }
+
+    s_pending_puback_msg_id = msg_id;
+
+    // aguarda a chegada do PUBACK
+    if (xSemaphoreTake(s_puback_sem, timeout_ticks) == pdTRUE) {
+        if (s_is_mqtt_connected) {
+            ESP_LOGD(TAG, "PUBACK confirmado para registro offline (msg_id: %d)", msg_id);
+            return ESP_OK;
+        } else {
+            ESP_LOGW(TAG, "Conexao perdida enquanto aguardava PUBACK (msg_id: %d)", msg_id);
+            return ESP_FAIL;
+        }
+    } else {
+        ESP_LOGW(TAG, "Timeout aguardando PUBACK do registro offline (msg_id: %d)", msg_id);
+        s_pending_puback_msg_id = -1;
+        return ESP_ERR_TIMEOUT;
+    }
+}
