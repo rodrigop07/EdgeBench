@@ -93,3 +93,8 @@ Desktop.ini
 
 .clang-format
 .editorconfig
+
+app/token.json
+app/credentials.json
+app/client_secret.json
+app/google-credentials.json

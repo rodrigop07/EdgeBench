@@ -1,0 +1,19 @@
+# ── Mensageria ──────────────────────────────────────────────────────────────
+paho-mqtt==1.6.1
+
+# ── Banco de Dados ───────────────────────────────────────────────────────────
+sqlalchemy==2.0.31
+psycopg2-binary==2.9.9
+
+# ── Análise de Dados e Exportação ────────────────────────────────────────────
+pandas==2.2.2
+openpyxl==3.1.4
+
+# ── Utilitários ──────────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+
+# ── Integração Google e Agendamento ──────────────────────────────────────────
+google-api-python-client==2.108.0
+google-auth-httplib2==0.1.1
+google-auth-oauthlib==1.1.0
+apscheduler==3.10.4
