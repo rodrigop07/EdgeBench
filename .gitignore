@@ -96,3 +96,8 @@ Desktop.ini
 /firmware/.cache/
 *.clangd
 /firmware_central/.cache/
+
+app/token.json
+app/credentials.json
+app/client_secret.json
+app/google-credentials.json
