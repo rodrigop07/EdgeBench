@@ -35,10 +35,14 @@ esp_err_t nvs_manager_get_broker_url(char *out_url, size_t max_len) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    memset(out_url, 0, max_len);
+
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Erro ao abrir NVS para leitura (%s)", esp_err_to_name(err));
+        strncpy(out_url, CONFIG_BROKER_URL, max_len - 1);
+        out_url[max_len - 1] = '\0';
         return err;
     }
 
@@ -47,8 +51,9 @@ esp_err_t nvs_manager_get_broker_url(char *out_url, size_t max_len) {
 
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "URL do broker carregada na NVS: %s", out_url);
-    } else if (err == ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGW(TAG, "URL do broker não encontrada na NVS, usando url padrão: %s", CONFIG_BROKER_URL);
+    } else {
+        ESP_LOGW(TAG, "URL do broker não encontrada ou inválida na NVS (%s), usando url padrão: %s",
+                 esp_err_to_name(err), CONFIG_BROKER_URL);
         strncpy(out_url, CONFIG_BROKER_URL, max_len - 1);
         out_url[max_len - 1] = '\0';
 
@@ -56,8 +61,6 @@ esp_err_t nvs_manager_get_broker_url(char *out_url, size_t max_len) {
         nvs_set_str(handle, "broker_url", out_url);
         nvs_commit(handle);
         err = ESP_OK;
-    } else {
-        ESP_LOGE(TAG, "Falha ao ler URL do broker da NVS: %s", esp_err_to_name(err));
     }
 
     nvs_close(handle);
@@ -133,23 +136,34 @@ esp_err_t nvs_manager_get_boot_count(uint32_t *boot_count) {
 }
 
 esp_err_t nvs_manager_get_wifi_credentials(char *out_ssid, size_t max_ssid_len, char *out_pass, size_t max_pass_len) {
-    // valida os argumento
+    // valida os argumentos
     if (out_ssid == NULL || max_ssid_len == 0 || out_pass == NULL || max_pass_len == 0) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    memset(out_ssid, 0, max_ssid_len);
+    memset(out_pass, 0, max_pass_len);
+
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Erro ao abrir NVS para ler credenciais Wi-Fi (%s)", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Erro ao abrir NVS para ler credenciais Wi-Fi (%s). Usando padroes.", esp_err_to_name(err));
+        strncpy(out_ssid, CONFIG_EXAMPLE_WIFI_SSID, max_ssid_len - 1);
+        out_ssid[max_ssid_len - 1] = '\0';
+        strncpy(out_pass, CONFIG_EXAMPLE_WIFI_PASSWORD, max_pass_len - 1);
+        out_pass[max_pass_len - 1] = '\0';
         return err;
     }
 
     // lê o SSID da rede
     size_t required_ssid_len = max_ssid_len;
     err = nvs_get_str(handle, "wifi_ssid", out_ssid, &required_ssid_len);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGW(TAG, "SSID não encontrado na NVS. Usando padrão: %s", CONFIG_EXAMPLE_WIFI_SSID);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "SSID não encontrado na NVS. Usando padrão: %s", CONFIG_EXAMPLE_WIFI_SSID);
+        } else {
+            ESP_LOGW(TAG, "Erro ao ler 'wifi_ssid' da NVS (%s). Usando padrão: %s", esp_err_to_name(err), CONFIG_EXAMPLE_WIFI_SSID);
+        }
         strncpy(out_ssid, CONFIG_EXAMPLE_WIFI_SSID, max_ssid_len - 1);
         out_ssid[max_ssid_len - 1] = '\0';
         nvs_set_str(handle, "wifi_ssid", out_ssid);
@@ -159,8 +173,12 @@ esp_err_t nvs_manager_get_wifi_credentials(char *out_ssid, size_t max_ssid_len, 
     // lê a Senha
     size_t required_pass_len = max_pass_len;
     err = nvs_get_str(handle, "wifi_pass", out_pass, &required_pass_len);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGW(TAG, "Senha de Wi-Fi não encontrada na NVS. Usando padrão.");
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "Senha de Wi-Fi não encontrada na NVS. Usando padrão.");
+        } else {
+            ESP_LOGW(TAG, "Erro ao ler 'wifi_pass' da NVS (%s). Usando padrão.", esp_err_to_name(err));
+        }
         strncpy(out_pass, CONFIG_EXAMPLE_WIFI_PASSWORD, max_pass_len - 1);
         out_pass[max_pass_len - 1] = '\0';
         nvs_set_str(handle, "wifi_pass", out_pass);
@@ -230,22 +248,22 @@ esp_err_t nvs_manager_get_bench_id(uint16_t *bench_id) {
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Erro ao abrir NVS para ler bench_id (%s)", esp_err_to_name(err));
+        *bench_id = (uint16_t)CONFIG_BENCH_ID;
         return err;
     }
 
     uint16_t id = 0;
     err = nvs_get_u16(handle, "bench_id", &id);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
-        // se o bench_id não existir, usa o valor do CONFIG_BENCH_ID
+    if (err != ESP_OK) {
         id = (uint16_t)CONFIG_BENCH_ID;
-        ESP_LOGW(TAG, "bench_id não encontrado na NVS. Usando valor padrão: %u", id);
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "bench_id não encontrado na NVS. Usando valor padrão: %u", id);
+        } else {
+            ESP_LOGW(TAG, "Erro ao ler 'bench_id' da NVS (%s). Usando valor padrão: %u", esp_err_to_name(err), id);
+        }
         nvs_set_u16(handle, "bench_id", id);
         nvs_commit(handle);
         err = ESP_OK;
-    } else if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Erro ao ler 'bench_id' da NVS (%s)", esp_err_to_name(err));
-        nvs_close(handle);
-        return err;
     }
 
     *bench_id = id;

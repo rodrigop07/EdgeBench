@@ -14,7 +14,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
-#include "protocol_examples_common.h"
 
 #include "lora_receiver.h"
 #include "mqtt_manager.h"
@@ -23,15 +22,57 @@
 #include "storage_manager.h"
 
 static const char *TAG = "APP_MAIN";
+static esp_netif_t *s_sta_netif = NULL;
 
 /**
- * @brief handler para gerenciar a reconexão automática do wifi
+ * @brief manipulador de eventos unificado para conexao e reconexao WiFi
  */
-static void wifi_reconnect_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data) {
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        ESP_LOGW(TAG, "Conexao Wi-Fi perdida. Tentando reconectar (retry continuo)...");
+static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data) {
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        ESP_LOGI(TAG, "Wi-Fi STA iniciado. Conectando a rede...");
         esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        wifi_event_sta_disconnected_t *disconn = (wifi_event_sta_disconnected_t *)event_data;
+        uint8_t reason = disconn ? disconn->reason : 0;
+        ESP_LOGW(TAG, "Wi-Fi desconectado (motivo: %u). Tentando reconectar...", reason);
+        esp_wifi_connect();
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        ESP_LOGI(TAG, "Wi-Fi conectado com sucesso! Endereco IP obtido: " IPSTR, IP2STR(&event->ip_info.ip));
     }
+}
+
+/**
+ * @brief inicializa a interface Wi-Fi no modo Station de forma nativa e segura
+ */
+static esp_err_t wifi_init_sta(const char *ssid, const char *password) {
+    s_sta_netif = esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_err_t ret = esp_wifi_init(&cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Falha ao inicializar Wi-Fi (%s)", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
+
+    wifi_config_t wifi_config = {0};
+    strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
+    if (password != NULL && strlen(password) > 0) {
+        strncpy((char *)wifi_config.sta.password, password, sizeof(wifi_config.sta.password) - 1);
+        wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    } else {
+        wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    }
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAG, "Wi-Fi STA configurado e iniciado para SSID: '%s'", ssid);
+    return ESP_OK;
 }
 
 void app_main(void) {
@@ -82,36 +123,11 @@ void app_main(void) {
     ESP_ERROR_CHECK(sensor_manager_init(storage_queue));
 
     // inicializa e conecta ao wifi utilizando as credenciais salvas na NVS
-    char wifi_ssid[32];
-    char wifi_pass[64];
+    char wifi_ssid[33] = {0};
+    char wifi_pass[65] = {0};
     nvs_manager_get_wifi_credentials(wifi_ssid, sizeof(wifi_ssid), wifi_pass, sizeof(wifi_pass));
 
-    esp_err_t wifi_err = example_connect();
-
-    // garante que as credenciais de rede sejam as da NVS
-    wifi_config_t current_wifi_cfg;
-    if (esp_wifi_get_config(WIFI_IF_STA, &current_wifi_cfg) == ESP_OK) {
-        if (strcmp((char *)current_wifi_cfg.sta.ssid, wifi_ssid) != 0 ||
-            strcmp((char *)current_wifi_cfg.sta.password, wifi_pass) != 0) {
-            ESP_LOGI(TAG, "Aplicando credenciais salvas da NVS no Wi-Fi: SSID=%s", wifi_ssid);
-            strncpy((char *)current_wifi_cfg.sta.ssid, wifi_ssid, sizeof(current_wifi_cfg.sta.ssid) - 1);
-            strncpy((char *)current_wifi_cfg.sta.password, wifi_pass, sizeof(current_wifi_cfg.sta.password) - 1);
-
-            esp_wifi_disconnect();
-            esp_wifi_set_config(WIFI_IF_STA, &current_wifi_cfg);
-            esp_wifi_connect();
-        }
-    }
-
-    if (wifi_err != ESP_OK) {
-        ESP_LOGW(TAG, "Wi-Fi nao conectou de primeira. Tentando reconectar com as credenciais da NVS...");
-        esp_wifi_connect();
-    } else {
-        ESP_LOGI(TAG, "Wi-Fi conectado com sucesso!");
-    }
-
-    // registra listener para manter reconexão persistente em caso de queda
-    esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &wifi_reconnect_handler, NULL, NULL);
+    wifi_init_sta(wifi_ssid, wifi_pass);
 
     // configura fuso horário para Horário de Brasília (UTC-3) e cliente SNTP
     setenv("TZ", "<-03>3", 1);
@@ -121,15 +137,18 @@ void app_main(void) {
     esp_netif_sntp_init(&sntp_config);
     ESP_LOGI(TAG, "SNTP inicializado em background (servidor: a.st1.ntp.br, fuso: UTC-3)");
 
-    if (wifi_err == ESP_OK && esp_netif_sntp_sync_wait(pdMS_TO_TICKS(3000)) == ESP_OK) {
+    if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(3000)) == ESP_OK) {
         ESP_LOGI(TAG, "Horario sincronizado com sucesso via SNTP!");
     } else {
-        ESP_LOGW(TAG, "Aguardando sincronizacao de horario em segundo plano...");
+        ESP_LOGW(TAG, "Aguardando sincronizacao de horario em segundo plano (ou via LoRa Beacon)...");
     }
 
     // inicializa e conecta o cliente MQTT 5 com o broker configurado na NVS
     char broker_uri[128];
     nvs_manager_get_broker_url(broker_uri, sizeof(broker_uri));
     ESP_LOGI(TAG, "Iniciando cliente MQTT5 com broker NVS: %s (Bancada: %u)", broker_uri, bench_id);
-    ESP_ERROR_CHECK(mqtt_manager_start(broker_uri, bench_id));
+    esp_err_t mqtt_err = mqtt_manager_start(broker_uri, bench_id);
+    if (mqtt_err != ESP_OK) {
+        ESP_LOGE(TAG, "Falha ao iniciar cliente MQTT (%s). Continuará tentando em background.", esp_err_to_name(mqtt_err));
+    }
 }

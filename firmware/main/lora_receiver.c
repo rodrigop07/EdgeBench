@@ -69,13 +69,13 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
         // copia o tamanho da url
         uint8_t url_len = payload[6];
         // validação do tamanho da url
-        if (length < (size_t)(7 + url_len) || url_len >= 128) {
+        if (length < (size_t)(7 + url_len) || url_len > 128) {
             ESP_LOGW(TAG, "Comprimento da URL inválido (%d)", url_len);
             return;
         }
 
         // cria a nova url
-        char nova_url[128];
+        char nova_url[129] = {0};
         memcpy(nova_url, &payload[7], url_len);
         nova_url[url_len] = '\0';
 
@@ -107,14 +107,14 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
 
         // copia o tamanho do ssid
         uint8_t ssid_len = payload[6];
-        // validação do tamanho do ssid
-        if (ssid_len == 0 || ssid_len >= 32 || length < (size_t)(7 + ssid_len + 1)) {
+        // validação do tamanho do ssid (1 a 32 caracteres)
+        if (ssid_len == 0 || ssid_len > 32 || length < (size_t)(7 + ssid_len + 1)) {
             ESP_LOGW(TAG, "Tamanho de SSID inválido (%d)", ssid_len);
             return;
         }
 
         // cria o novo ssid
-        char novo_ssid[32];
+        char novo_ssid[33] = {0};
         memcpy(novo_ssid, &payload[7], ssid_len);
         novo_ssid[ssid_len] = '\0';
 
@@ -122,14 +122,14 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
         size_t pass_offset = 7 + ssid_len;
         uint8_t pass_len = payload[pass_offset];
 
-        // validação do tamanho da senha
-        if (pass_len >= 64 || length < (pass_offset + 1 + pass_len)) {
+        // validação do tamanho da senha (0 a 64 caracteres)
+        if (pass_len > 64 || length < (pass_offset + 1 + pass_len)) {
             ESP_LOGW(TAG, "Tamanho de senha Wi-Fi inválido (%d)", pass_len);
             return;
         }
 
         // cria a nova senha
-        char nova_senha[64];
+        char nova_senha[65] = {0};
         if (pass_len > 0) {
             memcpy(nova_senha, &payload[pass_offset + 1], pass_len);
         }
