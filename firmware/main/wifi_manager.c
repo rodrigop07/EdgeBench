@@ -98,6 +98,14 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 
         // se nao estiver em meio a uma reconfiguração explícita, agenda reconexão não bloqueante via timer
         if (!s_is_reconfiguring) {
+            s_consecutive_failures++;
+            if (s_consecutive_failures >= WIFI_MAX_FAILURES_BEFORE_LORA_REQ) {
+                ESP_LOGW(TAG, "Falhas de Wi-Fi consecutivas (%d). Solicitando novas credenciais via LoRa...", s_consecutive_failures);
+                lora_send_req_config();
+                // reinicia o contador para não floodar a rede LoRa
+                s_consecutive_failures = 0;
+            }
+
             ESP_LOGI(TAG, "Agendando tentativa de reconexao em 2 segundos...");
             if (s_reconnect_timer != NULL) {
                 esp_timer_stop(s_reconnect_timer);
@@ -106,6 +114,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         s_is_connected = true;
+        s_consecutive_failures = 0;
         if (s_reconnect_timer != NULL) {
             esp_timer_stop(s_reconnect_timer);
         }
@@ -249,8 +258,8 @@ esp_err_t wifi_manager_reconfigure(const char *ssid, const char *password) {
 
     s_is_reconfiguring = false;
 
-    ESP_LOGI(TAG, "Wi-Fi reiniciado, conectando a rede '%s'...", clean_ssid);
-    return esp_wifi_connect();
+    ESP_LOGI(TAG, "Wi-Fi reiniciado com SSID '%s'. O driver irá reconectar automaticamente.", clean_ssid);
+    return ESP_OK;
 }
 
 bool wifi_manager_is_connected(void) {

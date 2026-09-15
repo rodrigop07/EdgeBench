@@ -713,18 +713,19 @@ esp_err_t lora_send_packet(const uint8_t *payload, size_t length) {
     sx1262_write_command(SX126X_CMD_SET_TX, tx_timeout, 3);
 
     // aguarda TxDone
-    int timeout_ms = 1500;
-    while (timeout_ms > 0) {
+    int64_t start_time = esp_timer_get_time();
+    bool tx_done = false;
+    while ((esp_timer_get_time() - start_time) < 1500000) { // 1.5 segundos
         uint16_t irq = sx1262_get_irq_status();
         if (irq & 0x0001) { // TxDone
             sx1262_clear_irq_status(0x0001);
+            tx_done = true;
             break;
         }
-        vTaskDelay(pdMS_TO_TICKS(5));
-        timeout_ms -= 5;
+        vTaskDelay(1); // 1 tick mínimo para yield (10ms se tick=100Hz)
     }
 
-    if (timeout_ms <= 0) {
+    if (!tx_done) {
         ESP_LOGE(TAG, "Timeout na transmissao do pacote LoRa");
         sx1262_set_rx(0xFFFFFF); // retorna para escuta contínua
         LORA_UNLOCK();

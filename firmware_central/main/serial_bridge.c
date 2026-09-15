@@ -84,7 +84,7 @@ static void process_json_command(const char *line) {
             settimeofday(&tv, NULL);
             ESP_LOGI(TAG, "Horario do ESP32 Central ajustado para epoch %llu", (unsigned long long)ts);
 
-            // Transmite imediatamente broadcast de horário via LoRa para todas as bancadas
+            // transmite imediatamente broadcast de horário via LoRa para todas as bancadas
             uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
             esp_err_t err = lora_send_resp_time(broadcast_mac, ts);
             if (err == ESP_OK) {
