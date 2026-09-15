@@ -83,7 +83,15 @@ static void process_json_command(const char *line) {
             struct timeval tv = {.tv_sec = (time_t)ts, .tv_usec = 0};
             settimeofday(&tv, NULL);
             ESP_LOGI(TAG, "Horario do ESP32 Central ajustado para epoch %llu", (unsigned long long)ts);
-            send_json_status("ok", "time_synced");
+
+            // Transmite imediatamente broadcast de horário via LoRa para todas as bancadas
+            uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+            esp_err_t err = lora_send_resp_time(broadcast_mac, ts);
+            if (err == ESP_OK) {
+                send_json_status("ok", "time_synced_and_broadcast");
+            } else {
+                send_json_status("error", "lora_tx_failed");
+            }
         } else {
             send_json_status("error", "missing_timestamp");
         }
@@ -93,15 +101,17 @@ static void process_json_command(const char *line) {
             // salva na NVS da Central
             central_nvs_set_broker(url_item->valuestring);
 
-            // opcionalmente transmite broadcast de atualizacao imediata
             char ssid[33] = {0};
             char pass[65] = {0};
             central_nvs_get_wifi(ssid, sizeof(ssid), pass, sizeof(pass));
 
             uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-            lora_send_resp_config(broadcast_mac, ssid, pass, url_item->valuestring);
-
-            send_json_status("ok", "broker_saved_and_broadcast");
+            esp_err_t err = lora_send_resp_config(broadcast_mac, ssid, pass, url_item->valuestring);
+            if (err == ESP_OK) {
+                send_json_status("ok", "broker_saved_and_broadcast");
+            } else {
+                send_json_status("error", "lora_tx_failed");
+            }
         } else {
             send_json_status("error", "missing_url");
         }
@@ -114,14 +124,16 @@ static void process_json_command(const char *line) {
             // salva na NVS da Central
             central_nvs_set_wifi(ssid_item->valuestring, pass);
 
-            // opcionalmente transmite broadcast de atualizacao imediata
             char broker[128] = {0};
             central_nvs_get_broker(broker, sizeof(broker));
 
             uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-            lora_send_resp_config(broadcast_mac, ssid_item->valuestring, pass, broker);
-
-            send_json_status("ok", "wifi_saved_and_broadcast");
+            esp_err_t err = lora_send_resp_config(broadcast_mac, ssid_item->valuestring, pass, broker);
+            if (err == ESP_OK) {
+                send_json_status("ok", "wifi_saved_and_broadcast");
+            } else {
+                send_json_status("error", "lora_tx_failed");
+            }
         } else {
             send_json_status("error", "missing_ssid");
         }

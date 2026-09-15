@@ -556,7 +556,7 @@ def interactive_menu(port: Optional[str] = None):
                 print("Encerrando...")
                 break
             else:
-                print("Opcao invalida.")
+                print("Opcao invalida")
     finally:
         ota_server.stop()
         gw.disconnect()

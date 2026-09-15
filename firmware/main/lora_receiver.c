@@ -75,22 +75,16 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
             return;
         }
 
-        time_t now = time(NULL);
-        // só aceita o epoch se o ESP ainda não tiver nenhum tempo configurado
-        if (now < 1704067200ULL) {
-            uint64_t epoch = 0;
-            memcpy(&epoch, &payload[8], sizeof(uint64_t));
+        uint64_t epoch = 0;
+        memcpy(&epoch, &payload[8], sizeof(uint64_t));
 
-            // valida se o epoch é válido (ano >= 2024 / 1704067200 epoch)
-            if (epoch >= 1704067200ULL) {
-                struct timeval tv = {.tv_sec = (time_t)epoch, .tv_usec = 0};
-                settimeofday(&tv, NULL);
-                ESP_LOGI(TAG, "Horário sincronizado com sucesso via LoRa (Epoch: %llu)", (unsigned long long)epoch);
-            } else {
-                ESP_LOGW(TAG, "Resposta LoRa de horario com Epoch invalido (%llu)", (unsigned long long)epoch);
-            }
+        // valida se o epoch é válido (ano >= 2024 / 1704067200 epoch)
+        if (epoch >= 1704067200ULL) {
+            struct timeval tv = {.tv_sec = (time_t)epoch, .tv_usec = 0};
+            settimeofday(&tv, NULL);
+            ESP_LOGI(TAG, "Horário sincronizado com sucesso via LoRa (Epoch: %llu)", (unsigned long long)epoch);
         } else {
-            ESP_LOGD(TAG, "Horario ja configurado, ignorando beacon de horario");
+            ESP_LOGW(TAG, "Resposta LoRa de horario com Epoch invalido (%llu)", (unsigned long long)epoch);
         }
     } else if (msg_type == LORA_MSG_RESP_CONFIG) {
         // formato: [0xEB, 0x21, TARGET_MAC(6B), TOKEN(4B), SSID_LEN(1B), SSID, PASS_LEN(1B), PASS, BROKER_LEN(1B),
@@ -205,6 +199,14 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
         if (err == ESP_OK) {
             ESP_LOGI(TAG, "ID da Bancada atualizado na NVS com sucesso! Aplicando ID %u...", novo_bench_id);
             mqtt_manager_set_bench_id(novo_bench_id);
+
+            // responde confirmação com o novo ID e MAC para a Central registrar
+            uint8_t resp[10];
+            resp[0] = LORA_ESPECIAL_BYTE;
+            resp[1] = LORA_MSG_RESP_BENCH_INFO;
+            memcpy(&resp[2], &novo_bench_id, sizeof(uint16_t));
+            memcpy(&resp[4], s_my_mac, 6);
+            lora_send_packet(resp, sizeof(resp));
         } else {
             ESP_LOGE(TAG, "Falha ao gravar bench_id na NVS (%s)", esp_err_to_name(err));
         }

@@ -229,10 +229,25 @@ esp_err_t lora_transmitter_init(void) {
     // ativa alimentação de periféricos/rádio no Heltec V3 (nível baixo)
     gpio_set_level(LORA_PIN_VEXT, 0);
 
-    io_conf.pin_bit_mask = (1ULL << LORA_PIN_BUSY) | (1ULL << LORA_PIN_DIO1);
-    io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-    gpio_config(&io_conf);
+    // configura pino BUSY como entrada com pull-up
+    gpio_config_t io_conf_busy = {
+        .pin_bit_mask = (1ULL << LORA_PIN_BUSY),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io_conf_busy);
+
+    // configura pino DIO1 com interrupção na borda de subida (POSEDGE) para capturar RxDone e TxDone
+    gpio_config_t io_conf_dio = {
+        .pin_bit_mask = (1ULL << LORA_PIN_DIO1),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+        .intr_type = GPIO_INTR_POSEDGE,
+    };
+    gpio_config(&io_conf_dio);
 
     // reset físico do chip
     gpio_set_level(LORA_PIN_RST, 0);
@@ -513,8 +528,8 @@ static void lora_rx_task(void *pvParameters) {
     uint8_t rx_buffer[256];
 
     while (1) {
-        // aguarda notificação liberada pela interrupção (ISR) do pino DIO1 do SX1262
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        // aguarda notificação da ISR do pino DIO1 com timeout de 1 segundo para segurança
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
 
         // bloqueia o acesso concorrente ao SPI enquanto lê e processa os dados do rádio
         LORA_LOCK();
