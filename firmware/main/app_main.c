@@ -19,6 +19,7 @@
 #include "lora_receiver.h"
 #include "mqtt_manager.h"
 #include "nvs_manager.h"
+#include "ota_manager.h"
 #include "sensor_manager.h"
 #include "storage_manager.h"
 #include "wifi_manager.h"
@@ -37,9 +38,18 @@ void app_main(void) {
     esp_log_level_set("STORAGE_MGR", ESP_LOG_INFO);
     esp_log_level_set("LORA_RCV", ESP_LOG_INFO);
     esp_log_level_set("NVS_MGR", ESP_LOG_INFO);
+    esp_log_level_set("OTA_MGR", ESP_LOG_INFO);
+
+    // configura fuso horário para GMT-3
+    setenv("TZ", "<-03>3", 1);
+    tzset();
 
     // inicializa o sistema NVS
     ESP_ERROR_CHECK(nvs_manager_init());
+
+    // inicializa e valida a imagem OTA atual cancelando rollback automático
+    ESP_ERROR_CHECK(ota_manager_init());
+    ota_manager_validate_boot();
 
     // instala serviço de interrupções GPIO
     esp_err_t isr_err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
@@ -80,11 +90,11 @@ void app_main(void) {
     char wifi_pass[65] = {0};
     nvs_manager_get_wifi_credentials(wifi_ssid, sizeof(wifi_ssid), wifi_pass, sizeof(wifi_pass));
 
-    if (wifi_ssid[0] == '\0') {
-        ESP_LOGW(TAG, "Nenhuma credencial Wi-Fi encontrada na NVS, solicitando via LoRa...");
+    if (wifi_ssid[0] == '\0' || strcmp(wifi_ssid, "pnat") == 0) {
+        ESP_LOGW(TAG, "Credencial Wi-Fi padrão ou vazia ('%s'). Solicitando credenciais via LoRa...", wifi_ssid);
         lora_send_req_config();
-        // aguarda até 3 segundos caso a Central responda de imediato
-        vTaskDelay(pdMS_TO_TICKS(3000));
+        // aguarda até 2 segundos caso a Central responda de imediato
+        vTaskDelay(pdMS_TO_TICKS(2000));
         nvs_manager_get_wifi_credentials(wifi_ssid, sizeof(wifi_ssid), wifi_pass, sizeof(wifi_pass));
     }
 

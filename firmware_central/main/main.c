@@ -20,6 +20,10 @@ void app_main(void) {
     ESP_LOGI(TAG, "   IDF: %s | Free Heap: %" PRIu32 " bytes        ", esp_get_idf_version(), esp_get_free_heap_size());
     ESP_LOGI(TAG, "=================================================");
 
+    // configura fuso horário para GMT-3
+    setenv("TZ", "<-03>3", 1);
+    tzset();
+
     // inicializa a NVS
     ESP_ERROR_CHECK(central_nvs_init());
 

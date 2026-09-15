@@ -1,5 +1,5 @@
 {
-    "idf.currentSetup": "C:\\esp\\v5.5.5\\esp-idf",
+    "idf.currentSetup": "/home/ezparza/.espressif/v5.5.5/esp-idf",
     "idf.projectDir": "${workspaceFolder}/firmware",
     "idf.openOcdConfigs": [
         "board/esp32s3-builtin.cfg"

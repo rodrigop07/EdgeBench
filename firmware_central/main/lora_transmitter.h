@@ -20,6 +20,7 @@
 #define LORA_MSG_REQ_BENCH_INFO 0x31  // Central -> Nó: consulta MAC de bancada com ID x
 #define LORA_MSG_RESP_BENCH_INFO 0x32 // Nó -> Central: informa seu ID e MAC
 #define LORA_MSG_ANNOUNCE_PAIRING 0x33 // Nó -> Central: anúncio de presença para pareamento físico
+#define LORA_MSG_CMD_OTA 0x40          // Central -> Nó: comanda início de atualização OTA
 
 // token de segurança para comandos críticos
 #define LORA_SECURITY_TOKEN 0xABCD1234
@@ -71,5 +72,10 @@ esp_err_t lora_send_set_bench(const uint8_t target_mac[6], uint16_t target_bench
  * @brief envia solicitação de consulta de MAC para a bancada indicada
  */
 esp_err_t lora_send_req_bench_info(uint16_t target_bench_id);
+
+/**
+ * @brief envia comando de atualização OTA direcionado por ID (ou 0 para todas)
+ */
+esp_err_t lora_send_cmd_ota(uint16_t target_bench_id, const char *url);
 
 #endif /* LORA_TRANSMITTER_H */

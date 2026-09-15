@@ -4,11 +4,13 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_rom_sys.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mqtt_manager.h"
 #include "nvs_manager.h"
+#include "ota_manager.h"
 #include "wifi_manager.h"
 #include <string.h>
 #include <sys/time.h>
@@ -74,22 +76,16 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
             return;
         }
 
-        time_t now = time(NULL);
-        // só aceita o epoch se o ESP ainda não tiver nenhum tempo configurado
-        if (now < 1704067200ULL) {
-            uint64_t epoch = 0;
-            memcpy(&epoch, &payload[8], sizeof(uint64_t));
+        uint64_t epoch = 0;
+        memcpy(&epoch, &payload[8], sizeof(uint64_t));
 
-            // valida se o epoch é válido (ano >= 2024 / 1704067200 epoch)
-            if (epoch >= 1704067200ULL) {
-                struct timeval tv = {.tv_sec = (time_t)epoch, .tv_usec = 0};
-                settimeofday(&tv, NULL);
-                ESP_LOGI(TAG, "Horário sincronizado com sucesso via LoRa (Epoch: %llu)", (unsigned long long)epoch);
-            } else {
-                ESP_LOGW(TAG, "Resposta LoRa de horario com Epoch invalido (%llu)", (unsigned long long)epoch);
-            }
+        // valida se o epoch é válido (ano >= 2024 / 1704067200 epoch)
+        if (epoch >= 1704067200ULL) {
+            struct timeval tv = {.tv_sec = (time_t)epoch, .tv_usec = 0};
+            settimeofday(&tv, NULL);
+            ESP_LOGI(TAG, "Horário sincronizado com sucesso via LoRa (Epoch: %llu)", (unsigned long long)epoch);
         } else {
-            ESP_LOGD(TAG, "Horario ja configurado, ignorando beacon de horario");
+            ESP_LOGW(TAG, "Resposta LoRa de horario com Epoch invalido (%llu)", (unsigned long long)epoch);
         }
     } else if (msg_type == LORA_MSG_RESP_CONFIG) {
         // formato: [0xEB, 0x21, TARGET_MAC(6B), TOKEN(4B), SSID_LEN(1B), SSID, PASS_LEN(1B), PASS, BROKER_LEN(1B),
@@ -204,6 +200,14 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
         if (err == ESP_OK) {
             ESP_LOGI(TAG, "ID da Bancada atualizado na NVS com sucesso! Aplicando ID %u...", novo_bench_id);
             mqtt_manager_set_bench_id(novo_bench_id);
+
+            // responde confirmação com o novo ID e MAC para a Central registrar
+            uint8_t resp[10];
+            resp[0] = LORA_ESPECIAL_BYTE;
+            resp[1] = LORA_MSG_RESP_BENCH_INFO;
+            memcpy(&resp[2], s_my_mac, 6);
+            memcpy(&resp[8], &novo_bench_id, sizeof(uint16_t));
+            lora_send_packet(resp, sizeof(resp));
         } else {
             ESP_LOGE(TAG, "Falha ao gravar bench_id na NVS (%s)", esp_err_to_name(err));
         }
@@ -221,13 +225,55 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
 
         if (req_id == 0 || req_id == my_id) {
             ESP_LOGI(TAG, "Respondendo consulta de MAC para Bancada ID %u com meu MAC...", my_id);
-            // formato de resposta: [0xEB, 0x32, BENCH_ID(2B), MAC(6B)] = 10 bytes
+            // formato de resposta: [0xEB, 0x32, MAC(6B), BENCH_ID(2B)] = 10 bytes
             uint8_t resp[10];
             resp[0] = LORA_ESPECIAL_BYTE;
             resp[1] = LORA_MSG_RESP_BENCH_INFO;
-            memcpy(&resp[2], &my_id, sizeof(uint16_t));
-            memcpy(&resp[4], s_my_mac, 6);
+            memcpy(&resp[2], s_my_mac, 6);
+            memcpy(&resp[8], &my_id, sizeof(uint16_t));
             lora_send_packet(resp, sizeof(resp));
+        }
+    } else if (msg_type == LORA_MSG_CMD_OTA) {
+        // formato: [0xEB, 0x40, TARGET_BENCH_ID(2B), TOKEN(4B), URL_LEN(1B), URL(N_BYTES)] = 9 + N bytes
+        if (length < 9) {
+            ESP_LOGW(TAG, "Pacote CMD_OTA com tamanho insuficiente (%d bytes)", (int)length);
+            return;
+        }
+
+        uint32_t token = 0;
+        memcpy(&token, &payload[4], sizeof(uint32_t));
+        if (token != LORA_SECURITY_TOKEN) {
+            ESP_LOGW(TAG, "CMD_OTA rejeitado: Token invalido (0x%08lX)", (unsigned long)token);
+            return;
+        }
+
+        uint16_t target_id = 0;
+        memcpy(&target_id, &payload[2], sizeof(uint16_t));
+
+        uint16_t my_id = 0;
+        nvs_manager_get_bench_id(&my_id);
+
+        if (target_id != 0 && target_id != my_id) {
+            ESP_LOGD(TAG, "CMD_OTA direcionado a outra bancada (Alvo: %u, Meu ID: %u), ignorando", target_id, my_id);
+            return;
+        }
+
+        uint8_t url_len = payload[8];
+        if (url_len == 0 || url_len > 180 || length < (size_t)(9 + url_len)) {
+            ESP_LOGW(TAG, "CMD_OTA com tamanho de URL invalido (%u)", url_len);
+            return;
+        }
+
+        char ota_url[192] = {0};
+        memcpy(ota_url, &payload[9], url_len);
+        ota_url[url_len] = '\0';
+
+        ESP_LOGI(TAG, "Comando de OTA recebido via LoRa, URL: %s", ota_url);
+        esp_err_t ret = ota_manager_start(ota_url);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Atualizacao OTA disparada com sucesso via LoRa");
+        } else {
+            ESP_LOGW(TAG, "Falha ao disparar OTA via LoRa: %s", esp_err_to_name(ret));
         }
     } else {
         ESP_LOGD(TAG, "Tipo de mensagem LoRa desconhecido ou ignorado (0x%02X)", msg_type);
@@ -668,18 +714,19 @@ esp_err_t lora_send_packet(const uint8_t *payload, size_t length) {
     sx1262_write_command(SX126X_CMD_SET_TX, tx_timeout, 3);
 
     // aguarda TxDone
-    int timeout_ms = 1500;
-    while (timeout_ms > 0) {
+    int64_t start_time = esp_timer_get_time();
+    bool tx_done = false;
+    while ((esp_timer_get_time() - start_time) < 1500000) { // 1.5 segundos
         uint16_t irq = sx1262_get_irq_status();
         if (irq & 0x0001) { // TxDone
             sx1262_clear_irq_status(0x0001);
+            tx_done = true;
             break;
         }
-        vTaskDelay(pdMS_TO_TICKS(5));
-        timeout_ms -= 5;
+        vTaskDelay(1); // 1 tick mínimo para yield (10ms se tick=100Hz)
     }
 
-    if (timeout_ms <= 0) {
+    if (!tx_done) {
         ESP_LOGE(TAG, "Timeout na transmissao do pacote LoRa");
         sx1262_set_rx(0xFFFFFF); // retorna para escuta contínua
         LORA_UNLOCK();
@@ -692,29 +739,39 @@ esp_err_t lora_send_packet(const uint8_t *payload, size_t length) {
     return ESP_OK;
 }
 
-// envia requisição de sincronização de horário com o endereço MAC deste nó
+// envia requisição de sincronização de horário com o endereço MAC e ID deste nó
 esp_err_t lora_send_req_time(void) {
-    // formato: [0xEB, 0x10, SENDER_MAC(6B)] = 8 bytes
-    uint8_t pkt[8];
+    uint16_t my_bench_id = 1;
+    nvs_manager_get_bench_id(&my_bench_id);
+
+    // formato: [0xEB, 0x10, SENDER_MAC(6B), BENCH_ID(2B)] = 10 bytes
+    uint8_t pkt[10];
     pkt[0] = LORA_ESPECIAL_BYTE;
     pkt[1] = LORA_MSG_REQ_TIME;
     memcpy(&pkt[2], s_my_mac, 6);
+    memcpy(&pkt[8], &my_bench_id, sizeof(uint16_t));
 
-    ESP_LOGI(TAG, "Enviando solicitacao de Horario (0x10) via LoRa [MAC: %02X:%02X:%02X:%02X:%02X:%02X]...",
-             s_my_mac[0], s_my_mac[1], s_my_mac[2], s_my_mac[3], s_my_mac[4], s_my_mac[5]);
+    ESP_LOGI(TAG,
+             "Enviando solicitacao de Horario (0x10) via LoRa [MAC: %02X:%02X:%02X:%02X:%02X:%02X, ID: %u]...",
+             s_my_mac[0], s_my_mac[1], s_my_mac[2], s_my_mac[3], s_my_mac[4], s_my_mac[5], my_bench_id);
     return lora_send_packet(pkt, sizeof(pkt));
 }
 
-// envia requisição das credenciais de wifi e broker MQTT
+// envia requisição das credenciais de wifi e broker MQTT com MAC e ID deste nó
 esp_err_t lora_send_req_config(void) {
-    // formato: [0xEB, 0x20, SENDER_MAC(6B)] = 8 bytes
-    uint8_t pkt[8];
+    uint16_t my_bench_id = 1;
+    nvs_manager_get_bench_id(&my_bench_id);
+
+    // formato: [0xEB, 0x20, SENDER_MAC(6B), BENCH_ID(2B)] = 10 bytes
+    uint8_t pkt[10];
     pkt[0] = LORA_ESPECIAL_BYTE;
     pkt[1] = LORA_MSG_REQ_CONFIG;
     memcpy(&pkt[2], s_my_mac, 6);
+    memcpy(&pkt[8], &my_bench_id, sizeof(uint16_t));
 
-    ESP_LOGI(TAG, "Enviando solicitacao de Configuracoes (0x20) via LoRa [MAC: %02X:%02X:%02X:%02X:%02X:%02X]...",
-             s_my_mac[0], s_my_mac[1], s_my_mac[2], s_my_mac[3], s_my_mac[4], s_my_mac[5]);
+    ESP_LOGI(TAG,
+             "Enviando solicitacao de Configuracoes (0x20) via LoRa [MAC: %02X:%02X:%02X:%02X:%02X:%02X, ID: %u]...",
+             s_my_mac[0], s_my_mac[1], s_my_mac[2], s_my_mac[3], s_my_mac[4], s_my_mac[5], my_bench_id);
     return lora_send_packet(pkt, sizeof(pkt));
 }
 

@@ -229,10 +229,25 @@ esp_err_t lora_transmitter_init(void) {
     // ativa alimentação de periféricos/rádio no Heltec V3 (nível baixo)
     gpio_set_level(LORA_PIN_VEXT, 0);
 
-    io_conf.pin_bit_mask = (1ULL << LORA_PIN_BUSY) | (1ULL << LORA_PIN_DIO1);
-    io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-    gpio_config(&io_conf);
+    // configura pino BUSY como entrada com pull-up
+    gpio_config_t io_conf_busy = {
+        .pin_bit_mask = (1ULL << LORA_PIN_BUSY),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io_conf_busy);
+
+    // configura pino DIO1 com interrupção na borda de subida (POSEDGE) para capturar RxDone e TxDone
+    gpio_config_t io_conf_dio = {
+        .pin_bit_mask = (1ULL << LORA_PIN_DIO1),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+        .intr_type = GPIO_INTR_POSEDGE,
+    };
+    gpio_config(&io_conf_dio);
 
     // reset físico do chip
     gpio_set_level(LORA_PIN_RST, 0);
@@ -348,18 +363,19 @@ esp_err_t lora_send_packet(const uint8_t *payload, size_t length) {
     sx1262_write_command(SX126X_CMD_SET_TX, tx_timeout, 3);
 
     // aguarda TxDone
-    int timeout_ms = 1500;
-    while (timeout_ms > 0) {
+    int64_t start_time = esp_timer_get_time();
+    bool tx_done = false;
+    while ((esp_timer_get_time() - start_time) < 1500000) { // 1.5 segundos
         uint16_t irq = sx1262_get_irq_status();
         if (irq & 0x0001) { // TxDone
             sx1262_clear_irq_status(0x0001);
+            tx_done = true;
             break;
         }
-        vTaskDelay(pdMS_TO_TICKS(5));
-        timeout_ms -= 5;
+        vTaskDelay(1); // 1 tick mínimo para yield (10ms se tick=100Hz)
     }
 
-    if (timeout_ms <= 0) {
+    if (!tx_done) {
         ESP_LOGE(TAG, "Timeout na transmissao do pacote LoRa");
         sx1262_set_rx(0xFFFFFF); // retorna para escuta
         LORA_UNLOCK();
@@ -477,6 +493,32 @@ esp_err_t lora_send_req_bench_info(uint16_t target_bench_id) {
     return lora_send_packet(pkt, sizeof(pkt));
 }
 
+// envia comando de atualização OTA direcionado por ID (ou 0 para todas as bancadas)
+esp_err_t lora_send_cmd_ota(uint16_t target_bench_id, const char *url) {
+    if (url == NULL || strlen(url) == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    size_t url_len = strlen(url);
+    if (url_len > 180) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    uint32_t token = LORA_SECURITY_TOKEN;
+    // formato: [0xEB, 0x40, TARGET_ID(2B), TOKEN(4B), URL_LEN(1B), URL(N_BYTES)] = 9 + N bytes
+    size_t pkt_size = 9 + url_len;
+    uint8_t pkt[pkt_size];
+    pkt[0] = LORA_ESPECIAL_BYTE;
+    pkt[1] = LORA_MSG_CMD_OTA;
+    memcpy(&pkt[2], &target_bench_id, sizeof(uint16_t));
+    memcpy(&pkt[4], &token, sizeof(uint32_t));
+    pkt[8] = (uint8_t)url_len;
+    memcpy(&pkt[9], url, url_len);
+
+    ESP_LOGI(TAG, "Enviando CMD_OTA (Alvo ID: %u, URL: %s)...", target_bench_id, url);
+    return lora_send_packet(pkt, pkt_size);
+}
+
 static void lora_rx_task(void *pvParameters) {
     ESP_LOGI(TAG, "Tarefa de escuta RX iniciada (Core 0)");
 
@@ -487,8 +529,8 @@ static void lora_rx_task(void *pvParameters) {
     uint8_t rx_buffer[256];
 
     while (1) {
-        // aguarda notificação liberada pela interrupção (ISR) do pino DIO1 do SX1262
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        // aguarda notificação da ISR do pino DIO1 com timeout de 1 segundo para segurança
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
 
         // bloqueia o acesso concorrente ao SPI enquanto lê e processa os dados do rádio
         LORA_LOCK();
@@ -510,15 +552,20 @@ static void lora_rx_task(void *pvParameters) {
                         if (msg_type == LORA_MSG_REQ_TIME && payload_len >= 8) {
                             uint8_t sender_mac[6];
                             memcpy(sender_mac, &rx_buffer[2], 6);
-                            ESP_LOGI(TAG, "[REQ_TIME] Recebido de bancada com MAC: %02X:%02X:%02X:%02X:%02X:%02X",
-                                     sender_mac[0], sender_mac[1], sender_mac[2], sender_mac[3], sender_mac[4],
-                                     sender_mac[5]);
+                            uint16_t sender_id = 0;
+                            if (payload_len >= 10) {
+                                memcpy(&sender_id, &rx_buffer[8], sizeof(uint16_t));
+                            }
+                            ESP_LOGI(TAG,
+                                     "[REQ_TIME] Recebido de Bancada ID %u (MAC: %02X:%02X:%02X:%02X:%02X:%02X)",
+                                     sender_id, sender_mac[0], sender_mac[1], sender_mac[2], sender_mac[3],
+                                     sender_mac[4], sender_mac[5]);
 
                             time_t now = time(NULL);
                             struct tm ti;
                             localtime_r(&now, &ti);
                             if (ti.tm_year >= (2024 - 1900)) {
-                                // responde o timestamp em broadcast para qualquer qualquer bancada sem horário
+                                // responde o timestamp em broadcast para qualquer bancada sem horário
                                 uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
                                 lora_send_resp_time(broadcast_mac, (uint64_t)now);
                             } else {
@@ -528,9 +575,14 @@ static void lora_rx_task(void *pvParameters) {
                         } else if (msg_type == LORA_MSG_REQ_CONFIG && payload_len >= 8) {
                             uint8_t sender_mac[6];
                             memcpy(sender_mac, &rx_buffer[2], 6);
-                            ESP_LOGI(TAG, "[REQ_CONFIG] Recebido de bancada com MAC: %02X:%02X:%02X:%02X:%02X:%02X",
-                                     sender_mac[0], sender_mac[1], sender_mac[2], sender_mac[3], sender_mac[4],
-                                     sender_mac[5]);
+                            uint16_t sender_id = 0;
+                            if (payload_len >= 10) {
+                                memcpy(&sender_id, &rx_buffer[8], sizeof(uint16_t));
+                            }
+                            ESP_LOGI(TAG,
+                                     "[REQ_CONFIG] Recebido de Bancada ID %u (MAC: %02X:%02X:%02X:%02X:%02X:%02X)",
+                                     sender_id, sender_mac[0], sender_mac[1], sender_mac[2], sender_mac[3],
+                                     sender_mac[4], sender_mac[5]);
 
                             char ssid[33] = {0};
                             char pass[65] = {0};
@@ -542,10 +594,10 @@ static void lora_rx_task(void *pvParameters) {
                             lora_send_resp_config(sender_mac, ssid, pass, broker);
                             // bancada respondendo consulta de identificação (ID e MAC)
                         } else if (msg_type == LORA_MSG_RESP_BENCH_INFO && payload_len >= 10) {
-                            uint16_t b_id = 0;
-                            memcpy(&b_id, &rx_buffer[2], sizeof(uint16_t));
                             uint8_t b_mac[6];
-                            memcpy(b_mac, &rx_buffer[4], 6);
+                            memcpy(b_mac, &rx_buffer[2], 6);
+                            uint16_t b_id = 0;
+                            memcpy(&b_id, &rx_buffer[8], sizeof(uint16_t));
                             ESP_LOGI(TAG,
                                      "[RESP_BENCH_INFO] Bancada ID %u respondeu, MAC: %02X:%02X:%02X:%02X:%02X:%02X",
                                      b_id, b_mac[0], b_mac[1], b_mac[2], b_mac[3], b_mac[4], b_mac[5]);

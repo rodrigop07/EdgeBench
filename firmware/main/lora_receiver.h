@@ -20,6 +20,7 @@
 #define LORA_MSG_REQ_BENCH_INFO 0x31   // Central -> Nó: consulta MAC de bancada com ID x
 #define LORA_MSG_RESP_BENCH_INFO 0x32  // Nó -> Central: informa seu ID e MAC
 #define LORA_MSG_ANNOUNCE_PAIRING 0x33 // Nó -> Central: anuncia presença para pareamento
+#define LORA_MSG_CMD_OTA 0x40          // Central -> Nó: comanda início de atualização OTA
 
 // token de segurança para autorizar comandos críticos
 #define LORA_SECURITY_TOKEN 0xABCD1234

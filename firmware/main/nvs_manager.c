@@ -255,13 +255,18 @@ esp_err_t nvs_manager_get_bench_id(uint16_t *bench_id) {
 
     uint16_t id = 0;
     err = nvs_get_u16(handle, "bench_id", &id);
-    if (err != ESP_OK) {
+    if (err != ESP_OK || id == 0 || id > 9999) {
         id = (uint16_t)CONFIG_BENCH_ID;
+        if (id == 0) {
+            id = 1;
+        }
         if (err == ESP_ERR_NVS_NOT_FOUND) {
             ESP_LOGW(TAG, "bench_id não encontrado na NVS. Usando valor padrão: %u", id);
         } else {
-            ESP_LOGW(TAG, "Erro ao ler 'bench_id' da NVS (%s). Usando valor padrão: %u", esp_err_to_name(err), id);
+            ESP_LOGW(TAG, "Valor de 'bench_id' na NVS inválido ou erro (%s, lido=%u). Resetando para padrão: %u",
+                     esp_err_to_name(err), id, id);
         }
+        nvs_erase_key(handle, "bench_id");
         nvs_set_u16(handle, "bench_id", id);
         nvs_commit(handle);
         err = ESP_OK;
@@ -274,9 +279,9 @@ esp_err_t nvs_manager_get_bench_id(uint16_t *bench_id) {
 }
 
 esp_err_t nvs_manager_set_bench_id(uint16_t bench_id) {
-    // valida o bench_id
-    if (bench_id <= 0) {
-        ESP_LOGE(TAG, "bench_id inválido (deve ser > 0)");
+    // valida o bench_id (entre 1 e 9999)
+    if (bench_id == 0 || bench_id > 9999) {
+        ESP_LOGE(TAG, "bench_id inválido: %u (deve estar entre 1 e 9999)", bench_id);
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -288,6 +293,7 @@ esp_err_t nvs_manager_set_bench_id(uint16_t bench_id) {
         return err;
     }
 
+    nvs_erase_key(handle, "bench_id");
     err = nvs_set_u16(handle, "bench_id", bench_id);
     if (err == ESP_OK) {
         // escreve o valor na flash
