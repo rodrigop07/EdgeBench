@@ -21,6 +21,7 @@
 #define LORA_MSG_RESP_BENCH_INFO 0x32  // Nó -> Central: informa seu ID e MAC
 #define LORA_MSG_ANNOUNCE_PAIRING 0x33 // Nó -> Central: anuncia presença para pareamento
 #define LORA_MSG_CMD_OTA 0x40          // Central -> Nó: comanda início de atualização OTA
+#define LORA_MSG_TELEMETRY 0x50        // Nó -> Central: fallback de telemetria (offline)
 
 // token de segurança para autorizar comandos críticos
 #define LORA_SECURITY_TOKEN 0xABCD1234
@@ -74,4 +75,11 @@ esp_err_t lora_send_announce_pairing(void);
  */
 void lora_process_packet(const uint8_t *payload, size_t length);
 
+
+/**
+ * @brief Envia um registro de telemetria via LoRa como fallback quando o Wi-Fi está offline.
+ */
+esp_err_t lora_send_telemetry(uint32_t count, uint64_t timestamp);
+
 #endif /* LORA_RECEIVER_H */
+

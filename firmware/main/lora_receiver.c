@@ -792,3 +792,21 @@ esp_err_t lora_send_announce_pairing(void) {
 
     return lora_send_packet(pkt, sizeof(pkt));
 }
+
+// envia pacote de telemetria (fallback offline)
+esp_err_t lora_send_telemetry(uint32_t count, uint64_t timestamp) {
+    uint16_t my_bench_id = 1;
+    nvs_manager_get_bench_id(&my_bench_id);
+
+    // formato: [0xEB, 0x50, MAC(6B), ID(2B), COUNT(4B), TIMESTAMP(8B)] = 22 bytes
+    uint8_t pkt[22];
+    pkt[0] = LORA_ESPECIAL_BYTE;
+    pkt[1] = LORA_MSG_TELEMETRY;
+    memcpy(&pkt[2], s_my_mac, 6);
+    memcpy(&pkt[8], &my_bench_id, sizeof(uint16_t));
+    memcpy(&pkt[10], &count, sizeof(uint32_t));
+    memcpy(&pkt[14], &timestamp, sizeof(uint64_t));
+
+    ESP_LOGI(TAG, "Enviando TELEMETRIA (0x50) via LoRa [ID: %u, Count: %lu]...", my_bench_id, (unsigned long)count);
+    return lora_send_packet(pkt, sizeof(pkt));
+}

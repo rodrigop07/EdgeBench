@@ -21,6 +21,7 @@
 #define LORA_MSG_RESP_BENCH_INFO 0x32 // Nó -> Central: informa seu ID e MAC
 #define LORA_MSG_ANNOUNCE_PAIRING 0x33 // Nó -> Central: anúncio de presença para pareamento físico
 #define LORA_MSG_CMD_OTA 0x40          // Central -> Nó: comanda início de atualização OTA
+#define LORA_MSG_TELEMETRY 0x50        // Nó -> Central: fallback de telemetria (offline)
 
 // token de segurança para comandos críticos
 #define LORA_SECURITY_TOKEN 0xABCD1234

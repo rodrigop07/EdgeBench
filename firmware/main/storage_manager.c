@@ -1,8 +1,11 @@
 #include "storage_manager.h"
 #include "esp_log.h"
 #include "esp_spiffs.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_random.h"
+#include "lora_receiver.h"
 #include "mqtt_manager.h"
 #include <stdio.h>
 #include <sys/stat.h>
@@ -67,21 +70,62 @@ static void core0_storage_task(void *pvParameters) {
 
     sensor_data_record_t record;
 
+    int64_t mqtt_disconnect_time = 0;
+    bool was_connected = true;
+    bool lora_backlog_sent = false;
+
     while (1) {
+        bool is_connected = mqtt_manager_is_connected();
+        if (is_connected && !was_connected) {
+            was_connected = true;
+            lora_backlog_sent = false;
+        } else if (!is_connected && was_connected) {
+            was_connected = false;
+            lora_backlog_sent = false;
+            mqtt_disconnect_time = esp_timer_get_time();
+        }
+
+        if (!is_connected && !lora_backlog_sent) {
+            int64_t offline_duration = esp_timer_get_time() - mqtt_disconnect_time;
+            if (offline_duration > 120000000ULL) {
+                lora_backlog_sent = true;
+                ESP_LOGI(TAG, "MQTT offline por >2min, transmitindo backlog acumulado via LoRa...");
+                FILE *f = fopen(s_log_file_path, "rb");
+                if (f) {
+                    sensor_data_record_t rec;
+                    while (fread(&rec, sizeof(sensor_data_record_t), 1, f) == 1) {
+                        if (mqtt_manager_is_connected()) break; // interrompe se reconectar
+                        uint32_t random_delay = 150 + (esp_random() % 150); // 150 a 299ms
+                        vTaskDelay(pdMS_TO_TICKS(random_delay)); // espaçamento c/ jitter aleatório p/ mitigar colisão RF
+                        lora_send_telemetry(rec.count, rec.timestamp);
+                    }
+                    fclose(f);
+                    ESP_LOGI(TAG, "Transmissão do backlog LoRa concluída.");
+                }
+            }
+        }
+
         // processa eventos da fila com timeout de 100ms para manter o laço responsivo
         if (xQueueReceive(s_storage_queue, &record, pdMS_TO_TICKS(100))) {
-            if (mqtt_manager_is_connected()) {
+            if (is_connected) {
                 // online: envia diretamente via MQTT
                 mqtt_manager_publish_detection(&record, false);
             } else {
                 // offline: salva no buffer binário na Flash SPIFFS
-                ESP_LOGW(TAG, "MQTT desconectado. Salvando evento offline na Flash SPIFFS...");
+                ESP_LOGW(TAG, "MQTT desconectado, salvando evento offline na Flash SPIFFS...");
                 append_to_offline_log(&record);
+
+                // verifica se deve enviar fallback via LoRa (> 2 minutos / 120s offline)
+                int64_t offline_duration = esp_timer_get_time() - mqtt_disconnect_time;
+                if (offline_duration > 120000000ULL) {
+                    ESP_LOGI(TAG, "MQTT offline por >2min, enviando telemetria hibrida via LoRa");
+                    lora_send_telemetry(record.count, record.timestamp);
+                }
             }
         }
 
         // se o MQTT estiver conectado, verifica se existem logs offline acumulados para sincronizar
-        if (mqtt_manager_is_connected()) {
+        if (is_connected) {
             struct stat st_sync, st_log;
             bool has_sync = (stat(s_sync_file_path, &st_sync) == 0 && st_sync.st_size > 0);
             bool has_log = (stat(s_log_file_path, &st_log) == 0 && st_log.st_size > 0);
@@ -117,6 +161,9 @@ static void core0_storage_task(void *pvParameters) {
                                 mqtt_manager_publish_detection(&live_rec, false);
                             } else {
                                 append_to_offline_log(&live_rec);
+                                uint32_t jitter_ms = 50 + (esp_random() % 150);
+                                vTaskDelay(pdMS_TO_TICKS(jitter_ms));
+                                lora_send_telemetry(live_rec.count, live_rec.timestamp);
                             }
                         }
 

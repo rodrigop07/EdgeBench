@@ -132,6 +132,9 @@ class EdgeBenchGateway:
         self.baudrate = baudrate
         self.timeout = timeout
         self.ser: Optional[serial.Serial] = None
+        self._rx_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._rx_thread = None
 
     @staticmethod
     def list_available_ports() -> List[str]:
@@ -183,8 +186,14 @@ class EdgeBenchGateway:
                 write_timeout=self.timeout,
             )
             # pausa para estabilização
+            # pausa para estabilização
             time.sleep(1.5)
             self.ser.reset_input_buffer()
+            
+            self._stop_event.clear()
+            self._rx_thread = threading.Thread(target=self._background_rx_loop, daemon=True)
+            self._rx_thread.start()
+
             logger.info(f"Conexao estabelecida com sucesso na porta {self.port}")
             return True
         except Exception as e:
@@ -192,7 +201,45 @@ class EdgeBenchGateway:
             self.ser = None
             return False
 
+
+    def _background_rx_loop(self):
+        while not self._stop_event.is_set():
+            has_data = False
+            with self._rx_lock:
+                if self.ser and self.ser.is_open and self.ser.in_waiting > 0:
+                    has_data = True
+                    try:
+                        raw_line = self.ser.readline().decode("utf-8", errors="ignore").strip()
+                        if raw_line.startswith("{") and "telemetry" in raw_line:
+                            try:
+                                j = json.loads(raw_line)
+                                if j.get("type") == "telemetry":
+                                    self._publish_telemetry(j)
+                            except Exception as e:
+                                logger.error(f"Erro no parse de telemetria: {e}")
+                    except Exception:
+                        pass
+            if not has_data:
+                time.sleep(0.05)
+
+    def _publish_telemetry(self, data):
+        if mqtt is None:
+            return
+        try:
+            client = mqtt.Client()
+            client.connect(DEFAULT_MQTT_HOST, DEFAULT_MQTT_PORT, 5)
+            topic = f"fabrica/bancada_{data.get('bench_id')}/deteccoes"
+            payload = json.dumps({"count": data.get("count"), "timestamp": data.get("timestamp")})
+            client.publish(topic, payload, qos=1)
+            client.disconnect()
+            logger.info(f"[MQTT] Telemetria LoRa -> {topic}: {payload}")
+        except Exception as e:
+            logger.error(f"Falha ao repassar telemetria LoRa para MQTT: {e}")
+
     def disconnect(self):
+        self._stop_event.set()
+        if self._rx_thread:
+            self._rx_thread.join(timeout=1.0)
         # fecha a porta serial com segurança
         if self.ser and self.ser.is_open:
             try:
@@ -233,7 +280,13 @@ class EdgeBenchGateway:
         start_time = time.time()
         while (time.time() - start_time) < self.timeout:
             try:
-                raw_line = self.ser.readline().decode("utf-8", errors="ignore").strip()
+                raw_line = ""
+                with self._rx_lock:
+                    if self.ser and self.ser.in_waiting > 0:
+                        raw_line = self.ser.readline().decode("utf-8", errors="ignore").strip()
+                if not raw_line:
+                    time.sleep(0.05)
+                    continue
                 if not raw_line:
                     continue
 
@@ -493,8 +546,11 @@ def interactive_menu(port: Optional[str] = None):
                     print("[INFO] Aguardando resposta LoRa da bancada...")
                     start_t = time.time()
                     while (time.time() - start_t) < 2.0:
-                        if gw.ser and gw.ser.in_waiting > 0:
-                            line = gw.ser.readline().decode("utf-8", errors="ignore").strip()
+                        with gw._rx_lock:
+                            if gw.ser and gw.ser.in_waiting > 0:
+                                line = gw.ser.readline().decode("utf-8", errors="ignore").strip()
+                            else:
+                                line = None
                             if line.startswith("{") and "bench_info" in line:
                                 print(f"[DESCOBERTA] -> {line}")
                                 break
@@ -505,8 +561,11 @@ def interactive_menu(port: Optional[str] = None):
                 print("\n[INFO] Monitorando porta serial... Pressione Ctrl+C para voltar ao menu.")
                 try:
                     while True:
-                        if gw.ser and gw.ser.in_waiting > 0:
-                            line = gw.ser.readline().decode("utf-8", errors="ignore").strip()
+                        with gw._rx_lock:
+                            if gw.ser and gw.ser.in_waiting > 0:
+                                line = gw.ser.readline().decode("utf-8", errors="ignore").strip()
+                            else:
+                                line = None
                             if line:
                                 print(f"[ESP32] {line}")
                         time.sleep(0.05)
@@ -520,8 +579,11 @@ def interactive_menu(port: Optional[str] = None):
                 print("=" * 60 + "\n")
                 try:
                     while True:
-                        if gw.ser and gw.ser.in_waiting > 0:
-                            line = gw.ser.readline().decode("utf-8", errors="ignore").strip()
+                        with gw._rx_lock:
+                            if gw.ser and gw.ser.in_waiting > 0:
+                                line = gw.ser.readline().decode("utf-8", errors="ignore").strip()
+                            else:
+                                line = None
                             if line.startswith("{") and "pairing" in line:
                                 try:
                                     pairing_data = json.loads(line)

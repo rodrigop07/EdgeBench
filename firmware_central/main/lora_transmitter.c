@@ -621,6 +621,21 @@ static void lora_rx_task(void *pvParameters) {
                                 "{\"status\":\"pairing\",\"bench_id\":%u,\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\"}\n",
                                 b_id, b_mac[0], b_mac[1], b_mac[2], b_mac[3], b_mac[4], b_mac[5]);
                             fflush(stdout);
+                        } else if (msg_type == LORA_MSG_TELEMETRY && payload_len >= 22) {
+                            uint8_t b_mac[6];
+                            memcpy(b_mac, &rx_buffer[2], 6);
+                            uint16_t b_id = 0;
+                            memcpy(&b_id, &rx_buffer[8], sizeof(uint16_t));
+                            uint32_t count = 0;
+                            memcpy(&count, &rx_buffer[10], sizeof(uint32_t));
+                            uint64_t timestamp = 0;
+                            memcpy(&timestamp, &rx_buffer[14], sizeof(uint64_t));
+
+                            ESP_LOGI(TAG, "[TELEMETRIA] Híbrida recebida da Bancada %u (Count: %lu)", b_id, (unsigned long)count);
+                            // emite evento JSON de telemetria na serial para o script python publicar no MQTT
+                            printf("{\"type\":\"telemetry\",\"bench_id\":%u,\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\",\"count\":%lu,\"timestamp\":%llu}\n",
+                                   b_id, b_mac[0], b_mac[1], b_mac[2], b_mac[3], b_mac[4], b_mac[5], (unsigned long)count, (unsigned long long)timestamp);
+                            fflush(stdout);
                         }
                     }
                 }
