@@ -73,7 +73,10 @@ class GoogleConfig:
     """Configurações de integração com Google Sheets/Drive."""
 
     credentials_path: str = field(
-        default_factory=lambda: os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+        default_factory=lambda: os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "credentials.json")
+    )
+    token_path: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_TOKEN_PATH", "/app/token.json" if os.path.exists("/app") else "token.json")
     )
     folder_id: str = field(default_factory=lambda: os.getenv("GOOGLE_DRIVE_FOLDER_ID", ""))
 
