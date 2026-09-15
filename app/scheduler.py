@@ -1,7 +1,7 @@
 """
 scheduler.py — Agendador de tarefas em segundo plano.
 
-Gerencia backups diários das planilhas e a sincronização com o Google Sheets.
+Gerencia backups diários das planilhas e a sincronização com o Google Sheets/Drive.
 """
 
 import logging
@@ -17,16 +17,17 @@ from google_sheets_sync import upload_to_sheets
 
 logger = logging.getLogger(__name__)
 
+
 def perform_backup_and_sync():
     """
-    1. Gera a planilha Excel com dados atualizados.
-    2. Faz backup local da planilha.
-    3. Sincroniza com o Google Sheets.
+    Rotina periódica de consolidação:
+    1. Gera a planilha Excel com todos os dados acumulados.
+    2. Salva uma cópia local de backup histórico.
+    3. Atualiza a planilha Mestre ('EdgeBench_Painel_Producao') no Google Sheets.
+    4. Grava o fechamento histórico ('EdgeBench_Fechamento_<timestamp>') no Google Drive.
     """
-    logger.info("Iniciando rotina de backup e sincronização do Sheets...")
-    
-    # 1. Gera o relatório
-    # Para o backup diário geral, não passaremos filtros de bancada, pegará tudo
+    logger.info("Iniciando rotina periódica de backup e sincronização com Google Drive...")
+
     from analytics import full_report
     data = full_report()
     excel_path = generate_excel_report(report_data=data)
@@ -34,41 +35,54 @@ def perform_backup_and_sync():
         logger.error("Falha ao gerar relatório para backup.")
         return
 
-    # 2. Faz o backup local
+    # Backup local no host
     backups_dir = os.path.join(app_config.reports_dir, "backups")
     os.makedirs(backups_dir, exist_ok=True)
-    
-    # Formato solicitado: mes, dia e ano no nome do relatorio
-    timestamp = datetime.now().strftime("%m-%d-%Y_%H%M%S")
-    backup_filename = f"EdgeBench_Backup_{timestamp}"
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    backup_filename = f"EdgeBench_Fechamento_{timestamp}"
     backup_path = os.path.join(backups_dir, f"{backup_filename}.xlsx")
-    
+
     try:
         shutil.copy2(excel_path, backup_path)
-        logger.info(f"Backup local salvo em: {backup_path}")
-    except Exception as e:
-        logger.error(f"Erro ao salvar backup local: {e}")
+        logger.info("Backup local salvo em: %s", backup_path)
+    except Exception as exc:
+        logger.error("Erro ao salvar backup local: %s", exc)
 
-    # 3. Sincroniza com o Google Sheets, criando um novo arquivo com o nome de backup
-    upload_to_sheets(excel_path, sheet_name=backup_filename)
-    
-    logger.info("Rotina de backup e sincronização finalizada.")
+    # 1. Atualiza a planilha MESTRE (link fixo de acompanhamento online)
+    logger.info("Atualizando planilha Mestre no Google Sheets...")
+    upload_to_sheets(
+        excel_filepath=excel_path,
+        sheet_name="EdgeBench_Painel_Producao",
+        convert_to_sheets=True,
+        update_if_exists=True,
+    )
+
+    # 2. Registra o fechamento histórico imutável
+    logger.info("Salvando fechamento histórico no Google Drive...")
+    upload_to_sheets(
+        excel_filepath=excel_path,
+        sheet_name=backup_filename,
+        convert_to_sheets=True,
+        update_if_exists=False,
+    )
+
+    logger.info("Rotina de backup e sincronização com Google Drive finalizada.")
 
 
 def start_scheduler():
     """Inicia o agendador em segundo plano."""
     scheduler = BackgroundScheduler()
 
-    # Agenda a tarefa para rodar duas vezes ao dia: às 12:00 e às 23:50
-    # O usuário pode ajustar os horários conforme necessário
+    # Agenda a tarefa para rodar nos fechamentos de turno (06:01, 14:01, 22:01)
     scheduler.add_job(
         perform_backup_and_sync,
-        CronTrigger(hour='12,23', minute='0,50'),
-        id='backup_sheets_job',
-        name='Backup and Sync to Google Sheets',
-        replace_existing=True
+        CronTrigger(hour='6,14,22', minute='1'),
+        id='shift_backup_sheets_job',
+        name='Backup e Sincronizacao Google Sheets (Fechamento de Turnos)',
+        replace_existing=True,
     )
-    
+
     scheduler.start()
-    logger.info("Scheduler iniciado. Tarefa de backup agendada para 12:00 e 23:50.")
+    logger.info("Scheduler iniciado. Tarefas de fechamento agendadas para 06:01, 14:01 e 22:01.")
     return scheduler

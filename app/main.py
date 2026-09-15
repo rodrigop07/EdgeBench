@@ -256,6 +256,11 @@ def _parse_args() -> argparse.Namespace:
         metavar="PATH",
         help="Caminho de saída do arquivo .xlsx.",
     )
+    parser.add_argument(
+        "--upload-drive",
+        action="store_true",
+        help="Realiza o upload automático do relatório gerado para o Google Drive / Sheets.",
+    )
     return parser.parse_args()
 
 
@@ -274,6 +279,24 @@ if __name__ == "__main__":
             output_path=args.output,
         )
         print(f"\nRelatório gerado: {path}")
+
+        if args.upload_drive:
+            from google_sheets_sync import upload_to_sheets
+            print("\nEnviando relatório para o Google Drive / Sheets...")
+            bancada_tag = args.bancada or "Consolidado"
+            sheet_title = f"EdgeBench_{bancada_tag}_{time.strftime('%Y-%m-%d_%H%M%S')}"
+            result = upload_to_sheets(
+                excel_filepath=path,
+                sheet_name=sheet_title,
+                convert_to_sheets=True,
+                update_if_exists=False,
+            )
+            if result and result.get("web_view_link"):
+                print(f"Planilha criada com sucesso no Google Sheets!")
+                print(f"Link de acesso: {result['web_view_link']}")
+            else:
+                print("[AVISO] Falha ao enviar para o Google Drive. Verifique o arquivo token.json.")
+
         sys.exit(0)
     else:
         # Modo normal: ingestão MQTT contínua
