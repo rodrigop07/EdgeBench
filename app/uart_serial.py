@@ -182,10 +182,26 @@ class EdgeBenchGateway:
         logger.info(f"Disparando comando LoRa para reconfigurar Wi-Fi (SSID: {ssid})...")
         return self.send_command({"cmd": "set_wifi", "ssid": ssid, "pass": password})
 
-    def set_bench(self, bench_id: int) -> Optional[Dict[str, Any]]:
+    def set_bench(
+        self, new_bench_id: int, target_bench_id: int = 0, target_mac: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         # emite comando via rádio LoRa para reconfigurar o ID numérico da bancada
-        logger.info(f"Disparando comando LoRa para configurar ID da bancada: {bench_id}")
-        return self.send_command({"cmd": "set_bench", "bench_id": bench_id})
+        payload = {"cmd": "set_bench", "bench_id": new_bench_id, "target_id": target_bench_id}
+        if target_mac:
+            payload["mac"] = target_mac
+            logger.info(
+                f"Disparando comando LoRa direcionado (Alvo ID: {target_bench_id}, MAC: {target_mac}) para novo ID: {new_bench_id}"
+            )
+        else:
+            logger.info(
+                f"Disparando comando LoRa (Alvo ID: {target_bench_id}) para novo ID da bancada: {new_bench_id}"
+            )
+        return self.send_command(payload)
+
+    def get_bench_info(self, target_bench_id: int = 0) -> Optional[Dict[str, Any]]:
+        # consulta o endereço MAC do ESP32 associado a um ID de bancada via rádio LoRa
+        logger.info(f"Consultando MAC da bancada ID {target_bench_id} via LoRa...")
+        return self.send_command({"cmd": "get_bench_info", "bench_id": target_bench_id})
 
     def beacon_now(self) -> Optional[Dict[str, Any]]:
         # força a emissão imediata de um Beacon LoRa com o horário atual
@@ -212,8 +228,9 @@ def interactive_menu(port: Optional[str] = None):
             print("  [2] Sincronizar Horario do PC (Emitir Beacon de Horario)")
             print("  [3] Reconfigurar Wi-Fi das bancadas via LoRa")
             print("  [4] Reconfigurar Broker MQTT das bancadas via LoRa")
-            print("  [5] Reconfigurar ID de Bancada via LoRa")
-            print("  [6] Monitorar logs contínuos da Serial")
+            print("  [5] Reconfigurar ID de Bancada via LoRa (identificando pelo ID atual)")
+            print("  [6] Consultar MAC de uma Bancada via LoRa")
+            print("  [7] Monitorar logs contínuos da Serial")
             print("  [0] Sair")
 
             choice = input("\nOpcao: ").strip()
@@ -236,11 +253,32 @@ def interactive_menu(port: Optional[str] = None):
                     res = gw.set_broker(url)
                     print(f"-> Resposta: {res}")
             elif choice == "5":
-                bid_str = input("Digite o novo ID da bancada (1 a 65535): ").strip()
-                if bid_str.isdigit():
-                    res = gw.set_bench(int(bid_str))
+                target_str = input(
+                    "Digite o ID ATUAL da bancada que deseja alterar (1 a 65535, ou 0 para qualquer): "
+                ).strip()
+                new_str = input("Digite o NOVO ID da bancada (1 a 65535): ").strip()
+                mac_str = input("Digite o MAC do ESP32 alvo (opcional, Enter para pular): ").strip()
+                if new_str.isdigit():
+                    tid = int(target_str) if target_str.isdigit() else 0
+                    res = gw.set_bench(int(new_str), target_bench_id=tid, target_mac=mac_str if mac_str else None)
                     print(f"-> Resposta: {res}")
             elif choice == "6":
+                target_str = input("Digite o ID da bancada a consultar (1 a 65535, ou 0 para todas): ").strip()
+                if target_str.isdigit():
+                    res = gw.get_bench_info(int(target_str))
+                    print(f"-> Resposta do Gateway: {res}")
+                    print("[INFO] Aguardando resposta LoRa da bancada...")
+                    start_t = time.time()
+                    while (time.time() - start_t) < 2.0:
+                        if gw.ser and gw.ser.in_waiting > 0:
+                            line = gw.ser.readline().decode("utf-8", errors="ignore").strip()
+                            if line.startswith("{") and "bench_info" in line:
+                                print(f"[DESCOBERTA] -> {line}")
+                                break
+                            elif line:
+                                print(f"[ESP32] {line}")
+                        time.sleep(0.05)
+            elif choice == "7":
                 print("\n[INFO] Monitorando porta serial... Pressione Ctrl+C para voltar ao menu.")
                 try:
                     while True:

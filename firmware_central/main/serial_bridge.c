@@ -6,6 +6,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lora_transmitter.h"
+#include "nvs_config.h"
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
@@ -38,6 +39,20 @@ static void send_json_status(const char *status, const char *msg) {
     cJSON_Delete(resp);
 }
 
+static bool parse_mac_string(const char *str, uint8_t out_mac[6]) {
+    if (str == NULL || strlen(str) < 17) {
+        return false;
+    }
+    unsigned int m[6];
+    if (sscanf(str, "%x:%x:%x:%x:%x:%x", &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) == 6) {
+        for (int i = 0; i < 6; i++) {
+            out_mac[i] = (uint8_t)m[i];
+        }
+        return true;
+    }
+    return false;
+}
+
 static void process_json_command(const char *line) {
     if (line == NULL || strlen(line) == 0) {
         return;
@@ -68,22 +83,25 @@ static void process_json_command(const char *line) {
             struct timeval tv = {.tv_sec = (time_t)ts, .tv_usec = 0};
             settimeofday(&tv, NULL);
             ESP_LOGI(TAG, "Horario do ESP32 Central ajustado para epoch %llu", (unsigned long long)ts);
-
-            // dispara beacon LoRa imediato
-            lora_send_beacon(ts);
-            send_json_status("ok", "time_synced_and_beacon_broadcast");
+            send_json_status("ok", "time_synced");
         } else {
             send_json_status("error", "missing_timestamp");
         }
     } else if (strcmp(cmd, "set_broker") == 0) {
         cJSON *url_item = cJSON_GetObjectItem(root, "url");
         if (cJSON_IsString(url_item) && url_item->valuestring != NULL) {
-            esp_err_t err = lora_send_set_broker(url_item->valuestring);
-            if (err == ESP_OK) {
-                send_json_status("ok", "set_broker_transmitted");
-            } else {
-                send_json_status("error", "lora_tx_failed");
-            }
+            // salva na NVS da Central
+            central_nvs_set_broker(url_item->valuestring);
+
+            // opcionalmente transmite broadcast de atualizacao imediata
+            char ssid[33] = {0};
+            char pass[65] = {0};
+            central_nvs_get_wifi(ssid, sizeof(ssid), pass, sizeof(pass));
+
+            uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+            lora_send_resp_config(broadcast_mac, ssid, pass, url_item->valuestring);
+
+            send_json_status("ok", "broker_saved_and_broadcast");
         } else {
             send_json_status("error", "missing_url");
         }
@@ -93,20 +111,41 @@ static void process_json_command(const char *line) {
         if (cJSON_IsString(ssid_item) && ssid_item->valuestring != NULL) {
             const char *pass =
                 (cJSON_IsString(pass_item) && pass_item->valuestring != NULL) ? pass_item->valuestring : "";
-            esp_err_t err = lora_send_set_wifi(ssid_item->valuestring, pass);
-            if (err == ESP_OK) {
-                send_json_status("ok", "set_wifi_transmitted");
-            } else {
-                send_json_status("error", "lora_tx_failed");
-            }
+            // salva na NVS da Central
+            central_nvs_set_wifi(ssid_item->valuestring, pass);
+
+            // opcionalmente transmite broadcast de atualizacao imediata
+            char broker[128] = {0};
+            central_nvs_get_broker(broker, sizeof(broker));
+
+            uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+            lora_send_resp_config(broadcast_mac, ssid_item->valuestring, pass, broker);
+
+            send_json_status("ok", "wifi_saved_and_broadcast");
         } else {
             send_json_status("error", "missing_ssid");
         }
     } else if (strcmp(cmd, "set_bench") == 0) {
         cJSON *id_item = cJSON_GetObjectItem(root, "bench_id");
+        if (!id_item) {
+            id_item = cJSON_GetObjectItem(root, "new_id");
+        }
+        cJSON *target_id_item = cJSON_GetObjectItem(root, "target_id");
+        cJSON *mac_item = cJSON_GetObjectItem(root, "mac");
+
         if (cJSON_IsNumber(id_item)) {
-            uint16_t bench_id = (uint16_t)id_item->valueint;
-            esp_err_t err = lora_send_set_bench(bench_id);
+            uint16_t new_bench_id = (uint16_t)id_item->valueint;
+            uint16_t target_bench_id =
+                (target_id_item && cJSON_IsNumber(target_id_item)) ? (uint16_t)target_id_item->valueint : 0;
+            uint8_t target_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // default: broadcast
+
+            if (cJSON_IsString(mac_item) && mac_item->valuestring != NULL && strlen(mac_item->valuestring) >= 17) {
+                if (!parse_mac_string(mac_item->valuestring, target_mac)) {
+                    ESP_LOGW(TAG, "Formato de MAC invalido: %s, usando broadcast", mac_item->valuestring);
+                }
+            }
+
+            esp_err_t err = lora_send_set_bench(target_mac, target_bench_id, new_bench_id);
             if (err == ESP_OK) {
                 send_json_status("ok", "set_bench_transmitted");
             } else {
@@ -115,10 +154,15 @@ static void process_json_command(const char *line) {
         } else {
             send_json_status("error", "missing_bench_id");
         }
-    } else if (strcmp(cmd, "beacon_now") == 0) {
-        time_t now = time(NULL);
-        lora_send_beacon((uint64_t)now);
-        send_json_status("ok", "beacon_transmitted");
+    } else if (strcmp(cmd, "get_bench_info") == 0 || strcmp(cmd, "query_bench") == 0) {
+        cJSON *id_item = cJSON_GetObjectItem(root, "bench_id");
+        uint16_t target_id = (id_item && cJSON_IsNumber(id_item)) ? (uint16_t)id_item->valueint : 0;
+        esp_err_t err = lora_send_req_bench_info(target_id);
+        if (err == ESP_OK) {
+            send_json_status("ok", "req_bench_info_transmitted");
+        } else {
+            send_json_status("error", "lora_tx_failed");
+        }
     } else if (strcmp(cmd, "ping") == 0) {
         send_json_status("pong", "gateway_online");
     } else {
@@ -149,7 +193,6 @@ static void serial_rx_task(void *pvParameters) {
                 if (line_idx < (BUF_SIZE - 1)) {
                     line_buffer[line_idx++] = ch;
                 } else {
-                    // buffer terminou sem quebra de linha, descarta
                     line_idx = 0;
                 }
             }
@@ -168,20 +211,14 @@ esp_err_t serial_bridge_init(void) {
             .source_clk = UART_SCLK_DEFAULT,
         };
 
-        esp_err_t err = uart_param_config(UART_PORT, &uart_config);
-        if (err != ESP_OK) {
-            return err;
-        }
-
-        err = uart_driver_install(UART_PORT, BUF_SIZE * 2, 0, 0, NULL, 0);
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-            return err;
-        }
+        ESP_ERROR_CHECK(uart_param_config(UART_PORT, &uart_config));
+        ESP_ERROR_CHECK(uart_driver_install(UART_PORT, BUF_SIZE * 2, 0, 0, NULL, 0));
     }
 
-    BaseType_t ret = xTaskCreatePinnedToCore(serial_rx_task, "serial_rx_task", 4096, NULL, 5, NULL, 0);
+    BaseType_t ret = xTaskCreatePinnedToCore(serial_rx_task, "serial_rx_task", 4096, NULL, 4, NULL, 0);
+
     if (ret != pdPASS) {
-        ESP_LOGE(TAG, "Falha ao criar tarefa serial_rx_task");
+        ESP_LOGE(TAG, "Falha ao criar serial_rx_task");
         return ESP_FAIL;
     }
 

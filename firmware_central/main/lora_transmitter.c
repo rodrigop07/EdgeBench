@@ -5,14 +5,18 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs_config.h"
 #include <string.h>
+#include <time.h>
 
-static const char *TAG = "LORA_TX";
+static const char *TAG = "GATEWAY_LORA";
 
 static spi_device_handle_t s_lora_spi = NULL;
+static TaskHandle_t s_rx_task_handle = NULL;
 
-// opcodes de comando do transceptor
+// opcodes de comando do transceptor SX1262
 #define SX126X_CMD_SET_STANDBY 0x80
+#define SX126X_CMD_SET_RX 0x82
 #define SX126X_CMD_SET_TX 0x83
 #define SX126X_CMD_SET_PACKET_TYPE 0x8A
 #define SX126X_CMD_SET_RF_FREQUENCY 0x86
@@ -30,11 +34,9 @@ static spi_device_handle_t s_lora_spi = NULL;
 #define SX126X_CMD_CALIBRATE 0x89
 #define SX126X_CMD_CALIBRATE_IMAGE 0x98
 #define SX126X_CMD_WRITE_BUFFER 0x0E
-#define LORA_PIN_VEXT 36
+#define SX126X_CMD_GET_RX_BUFFER_STATUS 0x13
+#define SX126X_CMD_READ_BUFFER 0x1E
 
-/**
- * @brief aguarda o chip SX1262 liberar o pino BUSY
- */
 static void sx1262_wait_busy(void) {
     int timeout_ms = 1000;
     while (gpio_get_level(LORA_PIN_BUSY) == 1 && timeout_ms > 0) {
@@ -46,9 +48,6 @@ static void sx1262_wait_busy(void) {
     }
 }
 
-/**
- * @brief envia comando SPI sem leitura de retorno
- */
 static esp_err_t sx1262_write_command(uint8_t opcode, const uint8_t *data, size_t length) {
     sx1262_wait_busy();
 
@@ -72,9 +71,6 @@ static esp_err_t sx1262_write_command(uint8_t opcode, const uint8_t *data, size_
     return ret;
 }
 
-/**
- * @brief escreve dados no buffer interno FIFO do SX1262
- */
 static esp_err_t sx1262_write_buffer(uint8_t offset, const uint8_t *data, size_t length) {
     sx1262_wait_busy();
 
@@ -94,9 +90,36 @@ static esp_err_t sx1262_write_buffer(uint8_t offset, const uint8_t *data, size_t
     return ret;
 }
 
-/**
- * @brief consulta o status de interrupções (IRQ) do SX1262
- */
+static esp_err_t sx1262_read_buffer(uint8_t offset, uint8_t *data, size_t length) {
+    if (data == NULL || length == 0 || length > 255) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    sx1262_wait_busy();
+
+    size_t total_len = 3 + length;
+    uint8_t tx_buf[259];
+    uint8_t rx_buf[259];
+    memset(tx_buf, 0, total_len);
+    memset(rx_buf, 0, total_len);
+
+    tx_buf[0] = SX126X_CMD_READ_BUFFER;
+    tx_buf[1] = offset;
+    tx_buf[2] = 0x00;
+
+    spi_transaction_t t;
+    memset(&t, 0, sizeof(t));
+    t.length = total_len * 8;
+    t.tx_buffer = tx_buf;
+    t.rx_buffer = rx_buf;
+
+    esp_err_t ret = spi_device_transmit(s_lora_spi, &t);
+    sx1262_wait_busy();
+    if (ret == ESP_OK) {
+        memcpy(data, &rx_buf[3], length);
+    }
+    return ret;
+}
+
 static uint16_t sx1262_get_irq_status(void) {
     sx1262_wait_busy();
 
@@ -118,10 +141,57 @@ static uint16_t sx1262_get_irq_status(void) {
     return ((uint16_t)rx_buf[2] << 8) | rx_buf[3];
 }
 
-esp_err_t lora_transmitter_init(void) {
-    ESP_LOGI(TAG, "Inicializando transceptor LoRa SX1262 para transmissao (915 MHz)...");
+static esp_err_t sx1262_clear_irq_status(uint16_t irq_mask) {
+    uint8_t data[2] = {(uint8_t)(irq_mask >> 8), (uint8_t)(irq_mask & 0xFF)};
+    return sx1262_write_command(SX126X_CMD_CLEAR_IRQ_STATUS, data, 2);
+}
 
-    // configuração dos pinos GPIO de controle
+static esp_err_t sx1262_set_rx(uint32_t timeout) {
+    uint8_t data[3] = {(uint8_t)((timeout >> 16) & 0xFF), (uint8_t)((timeout >> 8) & 0xFF), (uint8_t)(timeout & 0xFF)};
+    return sx1262_write_command(SX126X_CMD_SET_RX, data, 3);
+}
+
+static esp_err_t sx1262_get_rx_buffer_status(uint8_t *out_payload_len, uint8_t *out_rx_start_ptr) {
+    sx1262_wait_busy();
+
+    spi_transaction_t t;
+    memset(&t, 0, sizeof(t));
+
+    uint8_t tx_buf[4] = {SX126X_CMD_GET_RX_BUFFER_STATUS, 0x00, 0x00, 0x00};
+    uint8_t rx_buf[4] = {0};
+
+    t.length = 4 * 8;
+    t.tx_buffer = tx_buf;
+    t.rx_buffer = rx_buf;
+
+    esp_err_t ret = spi_device_transmit(s_lora_spi, &t);
+    sx1262_wait_busy();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    if (out_payload_len != NULL) {
+        *out_payload_len = rx_buf[2];
+    }
+    if (out_rx_start_ptr != NULL) {
+        *out_rx_start_ptr = rx_buf[3];
+    }
+    return ESP_OK;
+}
+
+static void IRAM_ATTR lora_dio1_isr_handler(void *arg) {
+    BaseType_t high_task_wakeup = pdFALSE;
+    if (s_rx_task_handle != NULL) {
+        vTaskNotifyGiveFromISR(s_rx_task_handle, &high_task_wakeup);
+        if (high_task_wakeup == pdTRUE) {
+            portYIELD_FROM_ISR();
+        }
+    }
+}
+
+esp_err_t lora_transmitter_init(void) {
+    ESP_LOGI(TAG, "Inicializando transceptor LoRa SX1262 a 915MHz...");
+
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << LORA_PIN_RST) | (1ULL << LORA_PIN_VEXT),
         .mode = GPIO_MODE_OUTPUT,
@@ -131,7 +201,7 @@ esp_err_t lora_transmitter_init(void) {
     };
     gpio_config(&io_conf);
 
-    // ativa alimentação de periféricos/rádio no Heltec V3 (Vext ativo em nível baixo)
+    // ativa alimentação de periféricos/rádio no Heltec V3 (nível baixo)
     gpio_set_level(LORA_PIN_VEXT, 0);
 
     io_conf.pin_bit_mask = (1ULL << LORA_PIN_BUSY) | (1ULL << LORA_PIN_DIO1);
@@ -139,7 +209,14 @@ esp_err_t lora_transmitter_init(void) {
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     gpio_config(&io_conf);
 
-    // barramento SPI2
+    // reset físico do chip
+    gpio_set_level(LORA_PIN_RST, 0);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level(LORA_PIN_RST, 1);
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    sx1262_wait_busy();
+
     spi_bus_config_t buscfg = {
         .miso_io_num = LORA_PIN_MISO,
         .mosi_io_num = LORA_PIN_MOSI,
@@ -148,88 +225,75 @@ esp_err_t lora_transmitter_init(void) {
         .quadhd_io_num = -1,
         .max_transfer_sz = 256,
     };
+    ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
-    esp_err_t ret = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
-    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "Falha ao inicializar barramento SPI (%s)", esp_err_to_name(ret));
-        return ret;
-    }
-
-    // configuracao do SPI
     spi_device_interface_config_t devcfg = {
-        .clock_speed_hz = 2000000,
+        .clock_speed_hz = 8000000,
         .mode = 0,
         .spics_io_num = LORA_PIN_NSS,
         .queue_size = 7,
     };
+    ESP_ERROR_CHECK(spi_bus_add_device(SPI2_HOST, &devcfg, &s_lora_spi));
 
-    ret = spi_bus_add_device(SPI2_HOST, &devcfg, &s_lora_spi);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Falha ao registrar dispositivo SPI (%s)", esp_err_to_name(ret));
-        return ret;
-    }
+    // modo Standby
+    uint8_t standby_data = 0x00; // STDBY_RC
+    sx1262_write_command(SX126X_CMD_SET_STANDBY, &standby_data, 1);
 
-    // reset do chip SX1262
-    gpio_set_level(LORA_PIN_RST, 0);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    gpio_set_level(LORA_PIN_RST, 1);
-    vTaskDelay(pdMS_TO_TICKS(20));
-    sx1262_wait_busy();
+    // DIO2 como RF Switch
+    uint8_t dio2_data = 0x01;
+    sx1262_write_command(SX126X_CMD_SET_DIO2_AS_RF_SWITCH, &dio2_data, 1);
 
-    // registradores de RF do SX1262
-    // standby RC
-    uint8_t standby_mode = 0x00;
-    sx1262_write_command(SX126X_CMD_SET_STANDBY, &standby_mode, 1);
+    // DIO3 como controle de TCXO (1.8V, timeout 320)
+    uint8_t dio3_data[4] = {0x02, 0x00, 0x01, 0x40};
+    sx1262_write_command(SX126X_CMD_SET_DIO3_AS_TCXO_CTRL, dio3_data, 4);
 
-    // ativa regulador interno DC-DC
-    uint8_t reg_mode = 0x01;
-    sx1262_write_command(SX126X_CMD_SET_REGULATOR_MODE, &reg_mode, 1);
-
-    // configura DIO3 para alimentar o oscilador TCXO a 1.8V com delay de 10ms (CRÍTICO para Heltec V3!)
-    uint8_t tcxo_params[4] = {0x02, 0x00, 0x02, 0x80};
-    sx1262_write_command(SX126X_CMD_SET_DIO3_AS_TCXO_CTRL, tcxo_params, 4);
-
-    // calibração de todos os blocos internos com o clock TCXO ativo
+    // calibração
     uint8_t calib_param = 0x7F;
     sx1262_write_command(SX126X_CMD_CALIBRATE, &calib_param, 1);
 
-    // calibração de rejeição de imagem para 902-928 MHz (faixa do 915 MHz)
+    // calibração de imagem ISM 902-928 MHz
     uint8_t calib_img[2] = {0xE1, 0xE9};
     sx1262_write_command(SX126X_CMD_CALIBRATE_IMAGE, calib_img, 2);
 
-    // configura DIO2 para chavear a antena RF
-    uint8_t dio2_switch = 0x01;
-    sx1262_write_command(SX126X_CMD_SET_DIO2_AS_RF_SWITCH, &dio2_switch, 1);
+    // modo regulador DC-DC
+    uint8_t reg_mode = 0x01;
+    sx1262_write_command(SX126X_CMD_SET_REGULATOR_MODE, &reg_mode, 1);
 
-    // tsipo de pacote: LoRa (0x01)
+    // tipo de pacote LoRa
     uint8_t pkt_type = 0x01;
     sx1262_write_command(SX126X_CMD_SET_PACKET_TYPE, &pkt_type, 1);
 
-    // frequência: 915 MHz (0x39300000)
+    // frequência 915 MHz (0x39300000)
     uint8_t rf_freq[4] = {0x39, 0x30, 0x00, 0x00};
     sx1262_write_command(SX126X_CMD_SET_RF_FREQUENCY, rf_freq, 4);
 
-    // PA config (+22 dBm)
-    uint8_t pa_config[4] = {0x04, 0x07, 0x00, 0x01};
-    sx1262_write_command(SX126X_CMD_SET_PA_CONFIG, pa_config, 4);
+    // PA config para +22 dBm
+    uint8_t pa_cfg[4] = {0x04, 0x07, 0x00, 0x01};
+    sx1262_write_command(SX126X_CMD_SET_PA_CONFIG, pa_cfg, 4);
 
-    // Tx params: +22 dBm (0x16), Ramp time 40us (0x02)
+    // parâmetros de TX: +22 dBm, ramp 200us
     uint8_t tx_params[2] = {0x16, 0x02};
     sx1262_write_command(SX126X_CMD_SET_TX_PARAMS, tx_params, 2);
 
-    // buffer base: TxBase=0x00, RxBase=0x00
+    // buffer base address (TX=0, RX=0)
     uint8_t buf_base[2] = {0x00, 0x00};
     sx1262_write_command(SX126X_CMD_SET_BUFFER_BASE_ADDR, buf_base, 2);
 
-    // parâmetros de Modulação: SF7 (0x07), BW 125kHz (0x04), CR 4/5 (0x01), LDRO off (0x00)
+    // modulação: SF7, BW 125kHz, CR 4/5, LowDataRateOptimize off
     uint8_t mod_params[4] = {0x07, 0x04, 0x01, 0x00};
     sx1262_write_command(SX126X_CMD_SET_MODULATION_PARAMS, mod_params, 4);
 
-    // configura interrupções DIO1 para TxDone (0x0001)
-    uint8_t irq_params[8] = {0x03, 0xFF, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00};
-    sx1262_write_command(SX126X_CMD_SET_DIO_IRQ_PARAMS, irq_params, 8);
+    // pacote: preâmbulo 8, header explícito, max len 255, CRC on, standard IQ
+    uint8_t pkt_params[6] = {0x00, 0x08, 0x00, 0xFF, 0x01, 0x00};
+    sx1262_write_command(SX126X_CMD_SET_PACKET_PARAMS, pkt_params, 6);
 
-    ESP_LOGI(TAG, "SX1262 inicializado com sucesso em 915 MHz (+22 dBm)!");
+    // DIO1 IRQ para RxDone (bit 1) e TxDone (bit 0)
+    uint8_t dio_irq[8] = {0x00, 0x03, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00};
+    sx1262_write_command(SX126X_CMD_SET_DIO_IRQ_PARAMS, dio_irq, 8);
+
+    sx1262_clear_irq_status(0xFFFF);
+
+    ESP_LOGI(TAG, "SX1262 inicializado com sucesso");
     return ESP_OK;
 }
 
@@ -238,148 +302,227 @@ esp_err_t lora_send_packet(const uint8_t *payload, size_t length) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    // garante que o rádio está em Standby
-    uint8_t standby_mode = 0x00;
-    sx1262_write_command(SX126X_CMD_SET_STANDBY, &standby_mode, 1);
+    uint8_t standby = 0x00;
+    sx1262_write_command(SX126X_CMD_SET_STANDBY, &standby, 1);
 
-    // escreve os dados no buffer FIFO a partir do offset 0
+    sx1262_clear_irq_status(0xFFFF);
+
+    // escreve os dados no buffer FIFO
     sx1262_write_buffer(0x00, payload, length);
 
-    // ajusta o tamanho do pacote no PacketParams
-    // Preamble=8 (0x0008), Header=Explicit (0x00), PayloadLen=length, CRC=On (0x01), InvertIQ=Std (0x00)
+    // configura tamanho do pacote
     uint8_t pkt_params[6] = {0x00, 0x08, 0x00, (uint8_t)length, 0x01, 0x00};
     sx1262_write_command(SX126X_CMD_SET_PACKET_PARAMS, pkt_params, 6);
 
-    // limpa todas as flags de interrupção
-    uint8_t clear_irq[2] = {0x03, 0xFF};
-    sx1262_write_command(SX126X_CMD_CLEAR_IRQ_STATUS, clear_irq, 2);
-
-    // inicia a transmissão em modo Tx (timeout de 3 segundos no rádio: ~3000ms / 15.625us = 0x02EE00)
-    uint8_t tx_timeout[3] = {0x02, 0xEE, 0x00};
+    // dispara transmissão
+    uint8_t tx_timeout[3] = {0x00, 0x00, 0x00};
     sx1262_write_command(SX126X_CMD_SET_TX, tx_timeout, 3);
 
-    // aguarda a conclusão da transmissão via TxDone (bit 0 = 0x0001) ou pino DIO1
-    int wait_ms = 3000;
-    bool tx_done = false;
-    while (wait_ms > 0) {
+    // aguarda TxDone
+    int timeout_ms = 1500;
+    while (timeout_ms > 0) {
         uint16_t irq = sx1262_get_irq_status();
         if (irq & 0x0001) { // TxDone
-            tx_done = true;
+            sx1262_clear_irq_status(0x0001);
             break;
         }
-        vTaskDelay(pdMS_TO_TICKS(10));
-        wait_ms -= 10;
+        vTaskDelay(pdMS_TO_TICKS(5));
+        timeout_ms -= 5;
     }
 
-    // limpa flags
-    sx1262_write_command(SX126X_CMD_CLEAR_IRQ_STATUS, clear_irq, 2);
-
-    if (!tx_done) {
-        ESP_LOGW(TAG, "Aviso: Timeout aguardando TxDone da transmissao LoRa");
+    if (timeout_ms <= 0) {
+        ESP_LOGE(TAG, "Timeout na transmissao do pacote LoRa");
+        sx1262_set_rx(0xFFFFFF); // retorna para escuta
         return ESP_ERR_TIMEOUT;
     }
 
-    ESP_LOGI(TAG, "Pacote LoRa (%d bytes, tipo: 0x%02X) transmitido com sucesso via RF!", (int)length, payload[1]);
+    // volta imediatamente para modo de escuta contínua (RX)
+    sx1262_set_rx(0xFFFFFF);
     return ESP_OK;
 }
 
-esp_err_t lora_send_beacon(uint64_t timestamp) {
-    // cria o pacote de beacon
-    uint8_t pkt[10];
-    pkt[0] = LORA_ESPECIAL_BYTE;                   // byte de identificação
-    pkt[1] = LORA_MSG_TIME_BEACON;                 // tipo de mensagem
-    memcpy(&pkt[2], &timestamp, sizeof(uint64_t)); // timestamp
-
-    // envia o pacote
-    ESP_LOGI(TAG, "Transmitindo Time Beacon LoRa (Epoch: %llu)...", (unsigned long long)timestamp);
-    return lora_send_packet(pkt, sizeof(pkt));
-}
-
-esp_err_t lora_send_set_broker(const char *broker_url) {
-    // verifica se o broker_url é válido
-    if (broker_url == NULL || strlen(broker_url) == 0) {
+esp_err_t lora_send_resp_time(const uint8_t target_mac[6], uint64_t timestamp) {
+    if (target_mac == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    // verifica se o tamanho do broker_url é válido
-    uint8_t url_len = (uint8_t)strlen(broker_url);
-    if (url_len > 120) {
-        return ESP_ERR_INVALID_SIZE;
-    }
-
-    // token de segurança
-    uint32_t token = LORA_SECURITY_TOKEN;
-
-    // cria o pacote de set broker
-    uint8_t pkt[7 + url_len];
+    uint8_t pkt[16];
     pkt[0] = LORA_ESPECIAL_BYTE;
-    pkt[1] = LORA_MSG_SET_BROKER;
-    memcpy(&pkt[2], &token, sizeof(uint32_t));
-    pkt[6] = url_len;
-    memcpy(&pkt[7], broker_url, url_len);
+    pkt[1] = LORA_MSG_RESP_TIME;
+    memcpy(&pkt[2], target_mac, 6);
+    memcpy(&pkt[8], &timestamp, sizeof(uint64_t));
 
-    // envia o pacote
-    ESP_LOGI(TAG, "Transmitindo comando Set Broker via LoRa: %s", broker_url);
+    ESP_LOGI(TAG, "Enviando RESP_TIME para MAC %02X:%02X:%02X:%02X:%02X:%02X (Epoch: %llu)", target_mac[0],
+             target_mac[1], target_mac[2], target_mac[3], target_mac[4], target_mac[5], (unsigned long long)timestamp);
+
     return lora_send_packet(pkt, sizeof(pkt));
 }
 
-esp_err_t lora_send_set_wifi(const char *ssid, const char *password) {
-    // verifica se o ssid é válido
-    if (ssid == NULL || strlen(ssid) == 0) {
+esp_err_t lora_send_resp_config(const uint8_t target_mac[6], const char *ssid, const char *password,
+                                const char *broker_url) {
+    if (target_mac == NULL || ssid == NULL || broker_url == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    // verifica se o tamanho do ssid é válido
     uint8_t ssid_len = (uint8_t)strlen(ssid);
     const char *safe_pass = (password != NULL) ? password : "";
     uint8_t pass_len = (uint8_t)strlen(safe_pass);
+    uint8_t broker_len = (uint8_t)strlen(broker_url);
 
-    if (ssid_len > 32 || pass_len > 64) {
-        return ESP_ERR_INVALID_SIZE;
-    }
-
-    // token de segurança
     uint32_t token = LORA_SECURITY_TOKEN;
-
-    // cria o pacote de set wifi
-    size_t pkt_size = 7 + ssid_len + 1 + pass_len;
+    size_t pkt_size = 2 + 6 + 4 + 1 + ssid_len + 1 + pass_len + 1 + broker_len;
     uint8_t pkt[pkt_size];
 
     pkt[0] = LORA_ESPECIAL_BYTE;
-    pkt[1] = LORA_MSG_SET_WIFI;
-    memcpy(&pkt[2], &token, sizeof(uint32_t));
-    pkt[6] = ssid_len;
-    memcpy(&pkt[7], ssid, ssid_len);
+    pkt[1] = LORA_MSG_RESP_CONFIG;
+    memcpy(&pkt[2], target_mac, 6);
+    memcpy(&pkt[8], &token, sizeof(uint32_t));
 
-    // adiciona o password ao pacote
-    size_t pass_offset = 7 + ssid_len;
-    pkt[pass_offset] = pass_len;
+    size_t offset = 12;
+    pkt[offset++] = ssid_len;
+    memcpy(&pkt[offset], ssid, ssid_len);
+    offset += ssid_len;
+
+    pkt[offset++] = pass_len;
     if (pass_len > 0) {
-        memcpy(&pkt[pass_offset + 1], safe_pass, pass_len);
+        memcpy(&pkt[offset], safe_pass, pass_len);
+        offset += pass_len;
     }
 
-    // envia o pacote
-    ESP_LOGI(TAG, "Transmitindo comando Set Wi-Fi via LoRa (SSID: %s)...", ssid);
+    pkt[offset++] = broker_len;
+    memcpy(&pkt[offset], broker_url, broker_len);
+    offset += broker_len;
+
+    ESP_LOGI(TAG, "Enviando RESP_CONFIG para MAC %02X:%02X:%02X:%02X:%02X:%02X (SSID: %s, Broker: %s)", target_mac[0],
+             target_mac[1], target_mac[2], target_mac[3], target_mac[4], target_mac[5], ssid, broker_url);
+
     return lora_send_packet(pkt, pkt_size);
 }
 
-esp_err_t lora_send_set_bench(uint16_t bench_id) {
-    // verifica se o bench_id é válido
-    if (bench_id == 0) {
+esp_err_t lora_send_set_bench(const uint8_t target_mac[6], uint16_t target_bench_id, uint16_t new_bench_id) {
+    if (new_bench_id == 0) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    // token de segurança
+    uint8_t mac_to_use[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    if (target_mac != NULL) {
+        memcpy(mac_to_use, target_mac, 6);
+    }
+
     uint32_t token = LORA_SECURITY_TOKEN;
-
-    // cria o pacote de set bench
-    uint8_t pkt[8];
+    uint8_t pkt[16];
     pkt[0] = LORA_ESPECIAL_BYTE;
-    pkt[1] = LORA_MSG_SET_BENCH;
-    memcpy(&pkt[2], &token, sizeof(uint32_t));
-    memcpy(&pkt[6], &bench_id, sizeof(uint16_t));
+    pkt[1] = LORA_MSG_CMD_SET_BENCH;
+    memcpy(&pkt[2], mac_to_use, 6);
+    memcpy(&pkt[8], &target_bench_id, sizeof(uint16_t));
+    memcpy(&pkt[10], &token, sizeof(uint32_t));
+    memcpy(&pkt[14], &new_bench_id, sizeof(uint16_t));
 
-    // envia o pacote
-    ESP_LOGI(TAG, "Transmitindo comando Set Bench ID via LoRa: %u", bench_id);
+    ESP_LOGI(TAG, "Enviando CMD_SET_BENCH (Alvo ID: %u, Novo ID: %u) para MAC %02X:%02X:%02X:%02X:%02X:%02X",
+             target_bench_id, new_bench_id, mac_to_use[0], mac_to_use[1], mac_to_use[2], mac_to_use[3], mac_to_use[4],
+             mac_to_use[5]);
+
     return lora_send_packet(pkt, sizeof(pkt));
+}
+
+esp_err_t lora_send_req_bench_info(uint16_t target_bench_id) {
+    uint8_t pkt[4];
+    pkt[0] = LORA_ESPECIAL_BYTE;
+    pkt[1] = LORA_MSG_REQ_BENCH_INFO;
+    memcpy(&pkt[2], &target_bench_id, sizeof(uint16_t));
+
+    ESP_LOGI(TAG, "Enviando REQ_BENCH_INFO para consultar bancada ID %u...", target_bench_id);
+    return lora_send_packet(pkt, sizeof(pkt));
+}
+
+static void lora_rx_task(void *pvParameters) {
+    ESP_LOGI(TAG, "Tarefa de escuta RX iniciada (Core 0)");
+
+    // coloca o rádio em modo de escuta contínua
+    sx1262_clear_irq_status(0xFFFF);
+    sx1262_set_rx(0xFFFFFF);
+
+    uint8_t rx_buffer[256];
+
+    while (1) {
+        // aguarda sinalização do pino DIO1 via notificação da ISR
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        uint16_t irq = sx1262_get_irq_status();
+        sx1262_clear_irq_status(irq);
+
+        if (irq & 0x0002) { // RxDone
+            uint8_t payload_len = 0;
+            uint8_t rx_ptr = 0;
+            if (sx1262_get_rx_buffer_status(&payload_len, &rx_ptr) == ESP_OK && payload_len >= 4) {
+                if (sx1262_read_buffer(rx_ptr, rx_buffer, payload_len) == ESP_OK) {
+                    if (rx_buffer[0] == LORA_ESPECIAL_BYTE) {
+                        uint8_t msg_type = rx_buffer[1];
+
+                        if (msg_type == LORA_MSG_REQ_TIME && payload_len >= 8) {
+                            uint8_t sender_mac[6];
+                            memcpy(sender_mac, &rx_buffer[2], 6);
+                            ESP_LOGI(TAG, "[REQ_TIME] Recebido de bancada com MAC: %02X:%02X:%02X:%02X:%02X:%02X",
+                                     sender_mac[0], sender_mac[1], sender_mac[2], sender_mac[3], sender_mac[4],
+                                     sender_mac[5]);
+
+                            time_t now = time(NULL);
+                            struct tm ti;
+                            localtime_r(&now, &ti);
+                            if (ti.tm_year >= (2024 - 1900)) {
+                                // responde o timestamp em broadcast para qualquer qualquer bancada sem horário
+                                uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+                                lora_send_resp_time(broadcast_mac, (uint64_t)now);
+                            } else {
+                                ESP_LOGW(TAG, "Horario nao sincronizado, ignorando REQ_TIME");
+                            }
+                        } else if (msg_type == LORA_MSG_REQ_CONFIG && payload_len >= 8) {
+                            uint8_t sender_mac[6];
+                            memcpy(sender_mac, &rx_buffer[2], 6);
+                            ESP_LOGI(TAG, "[REQ_CONFIG] Recebido de bancada com MAC: %02X:%02X:%02X:%02X:%02X:%02X",
+                                     sender_mac[0], sender_mac[1], sender_mac[2], sender_mac[3], sender_mac[4],
+                                     sender_mac[5]);
+
+                            char ssid[33] = {0};
+                            char pass[65] = {0};
+                            char broker[128] = {0};
+                            central_nvs_get_wifi(ssid, sizeof(ssid), pass, sizeof(pass));
+                            central_nvs_get_broker(broker, sizeof(broker));
+
+                            lora_send_resp_config(sender_mac, ssid, pass, broker);
+                        } else if (msg_type == LORA_MSG_RESP_BENCH_INFO && payload_len >= 10) {
+                            uint16_t b_id = 0;
+                            memcpy(&b_id, &rx_buffer[2], sizeof(uint16_t));
+                            uint8_t b_mac[6];
+                            memcpy(b_mac, &rx_buffer[4], 6);
+                            ESP_LOGI(TAG,
+                                     "[RESP_BENCH_INFO] Bancada ID %u respondeu, MAC: %02X:%02X:%02X:%02X:%02X:%02X",
+                                     b_id, b_mac[0], b_mac[1], b_mac[2], b_mac[3], b_mac[4], b_mac[5]);
+                            printf("{\"status\":\"ok\",\"msg\":\"bench_info\",\"bench_id\":%u,\"mac\":\"%02X:%02X:%02X:"
+                                   "%02X:%02X:%02X\"}\n",
+                                   b_id, b_mac[0], b_mac[1], b_mac[2], b_mac[3], b_mac[4], b_mac[5]);
+                            fflush(stdout);
+                        }
+                    }
+                }
+            }
+            // garante retorno ao modo de escuta
+            sx1262_set_rx(0xFFFFFF);
+        }
+    }
+}
+
+esp_err_t lora_start_rx_task(void) {
+    // instala serviço ISR no pino DIO1
+    gpio_isr_handler_add(LORA_PIN_DIO1, lora_dio1_isr_handler, NULL);
+
+    BaseType_t ret = xTaskCreatePinnedToCore(lora_rx_task, "lora_central_rx", 4096, NULL, 5, &s_rx_task_handle, 0);
+
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Falha ao criar lora_central_rx");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Escuta contínua de requisições ativada no SX1262");
+    return ESP_OK;
 }

@@ -8,19 +8,22 @@
 // frequência de operação do rádio LoRa 915 MHz
 #define LORA_FREQUENCY_HZ 915000000ULL
 
-// byte especial que identifica o pacote enviado via LoRa
+// byte identificador do EdgeBench
 #define LORA_ESPECIAL_BYTE 0xEB
 
-// tipos de mensagens e comandos via rádio
-#define LORA_MSG_TIME_BEACON 0x01 // sincronização de horário absoluto
-#define LORA_MSG_SET_BROKER 0x02  // atualização da URL do Broker MQTT
-#define LORA_MSG_SET_WIFI 0x03    // atualização de SSID e Senha Wi-Fi
-#define LORA_MSG_SET_BENCH 0x04   // atualização do ID da bancada
+// opcodes dos comandos
+#define LORA_MSG_REQ_TIME 0x10        // Nó -> Central: solicita timestamp
+#define LORA_MSG_RESP_TIME 0x11       // Central -> Nó: responde timestamp
+#define LORA_MSG_REQ_CONFIG 0x20      // Nó -> Central: solicita wifi e Broker
+#define LORA_MSG_RESP_CONFIG 0x21     // Central -> Nó: responde credenciais
+#define LORA_MSG_CMD_SET_BENCH 0x30   // Central -> Nó: configura ID direcionado por ID e/ou MAC
+#define LORA_MSG_REQ_BENCH_INFO 0x31  // Central -> Nó: consulta MAC de bancada com ID x
+#define LORA_MSG_RESP_BENCH_INFO 0x32 // Nó -> Central: informa seu ID e MAC
 
-// token de segurança para autorizar comandos enviados via LoRa
+// token de segurança para comandos críticos
 #define LORA_SECURITY_TOKEN 0xABCD1234
 
-// mapeamento de pinos do chip SX1262 no ESP32-S3 LoRa V3
+// mapeamento de pinos do chip SX1262
 #define LORA_PIN_NSS 8
 #define LORA_PIN_SCK 9
 #define LORA_PIN_MOSI 10
@@ -28,48 +31,44 @@
 #define LORA_PIN_RST 12
 #define LORA_PIN_BUSY 13
 #define LORA_PIN_DIO1 14
+#define LORA_PIN_VEXT 36
 
 /**
- * @brief inicializa o barramento SPI e configura o transceptor SX1262 para transmissão
+ * @brief inicializa o transceptor SX1262 para transmissão e recepção
  * @return ESP_OK em caso de sucesso
  */
 esp_err_t lora_transmitter_init(void);
 
 /**
- * @brief transmite um pacote de dados arbitrário via LoRa 915 MHz
- * @param payload Buffer de bytes a ser transmitido
- * @param length Quantidade de bytes
- * @return ESP_OK se o pacote foi transmitido com sucesso
+ * @brief inicia a tarefa de escuta contínua
+ * @return ESP_OK se a tarefa foi criada
+ */
+esp_err_t lora_start_rx_task(void);
+
+/**
+ * @brief transmite pacote arbitrário via LoRa e retorna para modo de escuta
  */
 esp_err_t lora_send_packet(const uint8_t *payload, size_t length);
 
 /**
- * @brief emite um pacote Time Beacon (0x01) com timestamp Unix Epoch
- * @param timestamp Segundos desde 01/01/1970
- * @return ESP_OK em caso de sucesso
+ * @brief envia resposta de horário (0x11) direcionada ao MAC da bancada ou broadcast
  */
-esp_err_t lora_send_beacon(uint64_t timestamp);
+esp_err_t lora_send_resp_time(const uint8_t target_mac[6], uint64_t timestamp);
 
 /**
- * @brief emite o comando de reconfiguração de URL do Broker MQTT (0x02) com token de segurança
- * @param broker_url String com a URL (ex: mqtt://192.168.1.100:1883)
- * @return ESP_OK em caso de sucesso
+ * @brief envia resposta de configuração (0x21) direcionada ao MAC da bancada
  */
-esp_err_t lora_send_set_broker(const char *broker_url);
+esp_err_t lora_send_resp_config(const uint8_t target_mac[6], const char *ssid, const char *password,
+                                const char *broker_url);
 
 /**
- * @brief emite o comando de reconfiguração de rede Wi-Fi (0x03) com token de segurança
- * @param ssid Nome da rede Wi-Fi
- * @param password Senha da rede Wi-Fi
- * @return ESP_OK em caso de sucesso
+ * @brief envia comando de configuração de ID da bancada direcionado por ID atual e/ou MAC
  */
-esp_err_t lora_send_set_wifi(const char *ssid, const char *password);
+esp_err_t lora_send_set_bench(const uint8_t target_mac[6], uint16_t target_bench_id, uint16_t new_bench_id);
 
 /**
- * @brief emite o comando de reatribuição de ID de Bancada (0x04) com token de segurança
- * @param bench_id Novo ID da bancada (1 a 65535)
- * @return ESP_OK em caso de sucesso
+ * @brief envia solicitação de consulta de MAC para a bancada indicada
  */
-esp_err_t lora_send_set_bench(uint16_t bench_id);
+esp_err_t lora_send_req_bench_info(uint16_t target_bench_id);
 
 #endif /* LORA_TRANSMITTER_H */

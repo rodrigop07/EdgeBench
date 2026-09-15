@@ -5,19 +5,22 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// define a frequência do LoRa, 915MHz
+// frequência de operação do rádio LoRa 915 MHz
 #define LORA_FREQUENCY_HZ 915000000ULL
 
 // byte inicial para identificar pacote do EdgeBench
 #define LORA_ESPECIAL_BYTE 0xEB
 
-// tipos de comandos que podem ser executados pelo rádio
-#define LORA_MSG_TIME_BEACON 0x01 // comando para sincronizar horário
-#define LORA_MSG_SET_BROKER 0x02  // comando para atualizar url do broker mqtt
-#define LORA_MSG_SET_WIFI 0x03    // comando para atualizar ssid e senha da rede wifi
-#define LORA_MSG_SET_BENCH 0x04   // comando para atualizar o ID da bancada
+// opcodes dos comandos
+#define LORA_MSG_REQ_TIME 0x10        // Nó -> Central: solicita timestamp
+#define LORA_MSG_RESP_TIME 0x11       // Central -> Nó: responde timestamp
+#define LORA_MSG_REQ_CONFIG 0x20      // Nó -> Central: solicita wifi e Broker
+#define LORA_MSG_RESP_CONFIG 0x21     // Central -> Nó: responde credenciais
+#define LORA_MSG_CMD_SET_BENCH 0x30   // Central -> Nó: configura ID direcionado por ID e/ou MAC
+#define LORA_MSG_REQ_BENCH_INFO 0x31  // Central -> Nó: consulta MAC de bancada com ID x
+#define LORA_MSG_RESP_BENCH_INFO 0x32 // Nó -> Central: informa seu ID e MAC
 
-// token de segurança para autorizar mudança de Broker pelo ar
+// token de segurança para autorizar comandos críticos
 #define LORA_SECURITY_TOKEN 0xABCD1234
 
 // mapeamento dos pinos do SX1262 na placa Heltec ESP32-S3 LoRa
@@ -28,6 +31,7 @@
 #define LORA_PIN_RST 12
 #define LORA_PIN_BUSY 13
 #define LORA_PIN_DIO1 14
+#define LORA_PIN_VEXT 36
 
 /**
  * @brief inicializa os pinos e o barramento SPI para o chip Semtech SX1262
@@ -42,13 +46,25 @@ esp_err_t lora_receiver_init(void);
 esp_err_t lora_receiver_start_task(void);
 
 /**
+ * @brief transmite pacote arbitrário via LoRa e retorna ao modo de escuta (RX)
+ */
+esp_err_t lora_send_packet(const uint8_t *payload, size_t length);
+
+/**
+ * @brief envia requisição de horário (0x10) o MAC do nó
+ */
+esp_err_t lora_send_req_time(void);
+
+/**
+ * @brief envia requisição de configurações de wifi e broker (0x20)
+ */
+esp_err_t lora_send_req_config(void);
+
+/**
  * @brief decodifica e processa o pacote LoRa recebido
  * @param payload ponteiro para o buffer de bytes
  * @param length quantidade de bytes recebidos
  */
 void lora_process_packet(const uint8_t *payload, size_t length);
-
-// função de teste
-void lora_receiver_test(void);
 
 #endif /* LORA_RECEIVER_H */

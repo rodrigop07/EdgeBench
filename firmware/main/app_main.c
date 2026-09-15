@@ -76,9 +76,17 @@ void app_main(void) {
     char wifi_pass[65] = {0};
     nvs_manager_get_wifi_credentials(wifi_ssid, sizeof(wifi_ssid), wifi_pass, sizeof(wifi_pass));
 
+    if (wifi_ssid[0] == '\0') {
+        ESP_LOGW(TAG, "Nenhuma credencial Wi-Fi encontrada na NVS, solicitando via LoRa...");
+        lora_send_req_config();
+        // aguarda até 3 segundos caso a Central responda de imediato
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        nvs_manager_get_wifi_credentials(wifi_ssid, sizeof(wifi_ssid), wifi_pass, sizeof(wifi_pass));
+    }
+
     wifi_manager_init_sta(wifi_ssid, wifi_pass);
 
-    // configura fuso horário para Horário de Brasília (UTC-3) e cliente SNTP
+    // configura fuso horário para horário de Brasília e cliente SNTP
     setenv("TZ", "<-03>3", 1);
     tzset();
 
@@ -89,7 +97,8 @@ void app_main(void) {
     if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(3000)) == ESP_OK) {
         ESP_LOGI(TAG, "Horario sincronizado com sucesso via SNTP!");
     } else {
-        ESP_LOGW(TAG, "Aguardando sincronizacao de horario em segundo plano (ou via LoRa Beacon)...");
+        ESP_LOGW(TAG, "Falha na sincronizacao SNTP. Solicitando horario via LoRa...");
+        lora_send_req_time();
     }
 
     // inicializa e conecta o cliente MQTT 5 com o broker configurado na NVS
@@ -98,6 +107,7 @@ void app_main(void) {
     ESP_LOGI(TAG, "Iniciando cliente MQTT5 com broker NVS: %s (Bancada: %u)", broker_uri, bench_id);
     esp_err_t mqtt_err = mqtt_manager_start(broker_uri, bench_id);
     if (mqtt_err != ESP_OK) {
-        ESP_LOGE(TAG, "Falha ao iniciar cliente MQTT (%s). Continuará tentando em background.", esp_err_to_name(mqtt_err));
+        ESP_LOGE(TAG, "Falha ao iniciar cliente MQTT (%s). Continuará tentando em background.",
+                 esp_err_to_name(mqtt_err));
     }
 }
