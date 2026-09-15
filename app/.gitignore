@@ -1,0 +1,31 @@
+# ── Segredos e credenciais (NUNCA commitar) ───────────────────────────────────
+.env
+token.json
+credentials.json
+*.json.bak
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+env/
+.env.local
+
+# ── Relatórios gerados ────────────────────────────────────────────────────────
+reports/
+
+# ── IDE / OS ──────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

@@ -2,6 +2,7 @@
 google_sheets_sync.py — Módulo para sincronização com Google Drive via OAuth 2.0.
 """
 
+import json
 import logging
 import os
 from google.oauth2.credentials import Credentials
@@ -14,22 +15,25 @@ from config import google_config
 logger = logging.getLogger(__name__)
 
 SCOPES = ['https://www.googleapis.com/auth/drive']
-TOKEN_PATH = '/app/token.json'
+DEFAULT_TOKEN_PATH = '/app/token.json'
 
 
 def get_drive_service():
     """Autentica com OAuth 2.0 utilizando token.json e renova se necessário."""
-    if not os.path.exists(TOKEN_PATH):
-        logger.error(f"Arquivo de token não encontrado em: {TOKEN_PATH}")
+    token_path = google_config.credentials_path or DEFAULT_TOKEN_PATH
+
+    if not os.path.exists(token_path):
+        logger.error(f"Arquivo de token não encontrado em: {token_path}")
         return None
 
     try:
-        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
-        
+        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+
         # Renova o token automaticamente se estiver expirado
         if creds and creds.expired and creds.refresh_token:
+            logger.info("Token expirado, renovando automaticamente...")
             creds.refresh(Request())
-            with open(TOKEN_PATH, 'w') as token_file:
+            with open(token_path, 'w') as token_file:
                 token_file.write(creds.to_json())
 
         return build('drive', 'v3', credentials=creds)

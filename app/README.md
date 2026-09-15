@@ -1,88 +1,150 @@
-# EdgeBench Backend
+# EdgeBench — Backend
 
-O EdgeBench Backend é responsável por ingerir a telemetria via MQTT publicada pelo hardware EdgeBench (ESP32), armazenar os dados no PostgreSQL e gerar relatórios em formato Excel (e Google Sheets) com gráficos automáticos para acompanhamento da produção.
+O **EdgeBench Backend** é responsável por:
 
-## 🚀 Como Executar o Projeto
+- **Ingerir telemetria** via MQTT publicada pelo hardware EdgeBench (ESP32)
+- **Armazenar os dados** no PostgreSQL
+- **Gerar relatórios Excel** com gráficos automáticos por bancada, turno e hora
+- **Sincronizar automaticamente** o relatório mais recente para o Google Drive
 
-O backend é 100% conteinerizado usando Docker.
+Toda a infraestrutura é **100% conteinerizada com Docker**.
 
-Para subir a infraestrutura completa (Mosquitto, PostgreSQL e o Backend Python):
+---
+
+## 📦 Pré-requisitos
+
+- [Docker](https://docs.docker.com/get-docker/) + [Docker Compose](https://docs.docker.com/compose/)
+- Python 3.11+ *(apenas para gerar o token OAuth — etapa única)*
+- Conta Google com acesso à pasta de destino no Drive
+
+---
+
+## 🚀 Subindo o Projeto
+
 ```bash
-cd app
+# Clone o repositório (branch com o backend)
+git clone -b app git@github.com:rodrigop07/EdgeBench.git
+cd EdgeBench/app
+
+# Configure as variáveis de ambiente
+cp .env.example .env
+# Edite o .env se precisar mudar senhas ou IDs
+
+# Suba todos os serviços (Mosquitto + PostgreSQL + Backend)
 docker compose up -d --build
 ```
 
-Para acompanhar os logs do backend em tempo real:
+Acompanhe os logs em tempo real:
+
 ```bash
 docker compose logs -f backend
 ```
 
-## 📊 Como Gerar Planilhas Sob Demanda
+---
 
-Você pode gerar relatórios em formato Excel usando a interface de linha de comando (`CLI`) que foi construída no `main.py`, rodando-a de dentro do container do backend.
+## ☁️ Configurando o Google Drive (etapa única por máquina)
 
-**Opções disponíveis:**
-* `--export` : Ativa o modo de geração de relatório.
-* `--bancada <ID>` : Filtra a geração para uma bancada específica (Ex: `BC-01`).
-* `--start <DATA>` : Filtra o relatório a partir de uma data específica (ISO 8601, ex: `2026-09-01T00:00:00`).
-* `--end <DATA>` : Filtra o relatório até uma data específica (ISO 8601).
-* `--output <CAMINHO>` : Define onde o arquivo será salvo.
+A sincronização usa **OAuth 2.0** com a sua conta Google pessoal.  
+Você precisa gerar um `token.json` localmente **uma vez** e ele será renovado automaticamente depois disso.
 
-### Exemplos de uso
+### Passo 1 — Instale as dependências Python locais
 
-Gerar o relatório completo de tudo que está no banco de dados:
 ```bash
+# Dentro da pasta app/, ative o venv (ou instale globalmente)
+pip install google-auth-oauthlib google-auth-httplib2 google-api-python-client
+```
+
+### Passo 2 — Obtenha o `credentials.json` do projeto
+
+Peça ao responsável pelo projeto (`rodrigop07`) o arquivo `credentials.json`.  
+Coloque-o dentro da pasta `app/`.
+
+> ⚠️ **Nunca commite esse arquivo.** Ele já está no `.gitignore`.
+
+### Passo 3 — Gere o seu `token.json`
+
+```bash
+python generate_token.py
+```
+
+Um navegador abrirá pedindo login com sua conta Google.  
+Após autorizar, o arquivo `token.json` será criado na pasta `app/`.
+
+> ⚠️ **Nunca commite esse arquivo.** Ele já está no `.gitignore`.
+
+### Passo 4 — Suba o container
+
+```bash
+docker compose up -d --build backend
+```
+
+O backend usará o `token.json` para autenticar e fazer upload dos relatórios para a pasta configurada no Drive.
+
+---
+
+## 📊 Gerando Relatórios Manualmente
+
+Você pode gerar e sincronizar um relatório sob demanda sem esperar o agendamento:
+
+```bash
+# Gera Excel + faz upload para o Drive agora
+docker compose exec backend python -c "from scheduler import perform_backup_and_sync; perform_backup_and_sync()"
+```
+
+Ou gerar apenas o Excel localmente (sem sync):
+
+```bash
+# Relatório completo
 docker compose exec backend python main.py --export
+
+# Filtrado por bancada e intervalo de datas
+docker compose exec backend python main.py --export \
+  --bancada BC-01 \
+  --start 2026-09-01T00:00:00 \
+  --end 2026-09-14T23:59:59
 ```
 
-Gerar relatório de uma bancada num intervalo específico:
-```bash
-docker compose exec backend python main.py --export --bancada BC-01 --start 2026-09-01T00:00:00 --end 2026-09-14T23:59:59
+Os arquivos são salvos em `app/reports/` na sua máquina (via volume Docker).
+
+---
+
+## ⏱️ Agendamento Automático
+
+O scheduler roda automaticamente **2x por dia** (12h00 e 23h50) e executa:
+
+1. Gera um Excel com timestamp e salva em `reports/backups/`
+2. Faz upload da versão mais recente para a pasta do Google Drive configurada em `GOOGLE_DRIVE_FOLDER_ID`
+
+---
+
+## 🗂️ Estrutura dos Arquivos
+
+```
+app/
+├── main.py               # CLI + inicialização do MQTT listener
+├── mqtt_listener.py      # Subscrição e processamento de mensagens MQTT
+├── models.py             # Modelos SQLAlchemy (tabelas do banco)
+├── database.py           # Pool de conexão PostgreSQL
+├── analytics.py          # Agregações e KPIs a partir dos dados
+├── excel_generator.py    # Geração de relatórios Excel com gráficos
+├── google_sheets_sync.py # Upload OAuth 2.0 para o Google Drive
+├── scheduler.py          # Rotina agendada de backup e sync
+├── config.py             # Configurações via variáveis de ambiente
+├── generate_token.py     # Script único para gerar token OAuth local
+├── Dockerfile            # Build multi-stage da imagem Python
+├── docker-compose.yml    # Orquestra backend + postgres + mosquitto
+├── .env.example          # Template de variáveis de ambiente
+└── requirements.txt      # Dependências Python
 ```
 
-*Nota: Os relatórios gerados via comando ou via scheduler são salvos na pasta local `app/reports/` na sua máquina Host (via volume do Docker).*
+---
 
+## 🔐 Arquivos Sensíveis (não commitados)
 
-## ☁️ Integração com Google Sheets (Sincronização e Backup)
+| Arquivo | Descrição |
+|---|---|
+| `.env` | Variáveis de ambiente com senhas e IDs |
+| `token.json` | Token OAuth gerado localmente — **pessoal, não compartilhe** |
+| `credentials.json` | Segredo OAuth do app Google Cloud — **solicite ao responsável** |
 
-O sistema possui uma rotina em background (`scheduler.py`) que roda automaticamente 2 vezes ao dia (às 12h00 e 23h50).
-Essa rotina faz:
-1. Um backup do banco gerando um Excel com a data/hora no nome dentro da pasta `reports/backups/`.
-2. Sincroniza a versão mais recente para uma pasta no seu **Google Drive**, convertendo-a automaticamente para **Google Sheets** nativo.
-
-### Passo a Passo para Configurar o Google Sheets
-
-Para que a sincronização funcione, você precisa criar uma conta de serviço no Google Cloud e dar permissão na sua pasta do Google Drive. Siga os passos:
-
-#### 1. Criar a Service Account e Obter a Chave (JSON)
-1. Acesse o [Google Cloud Console](https://console.cloud.google.com/).
-2. Crie um novo projeto (ou selecione um existente).
-3. Vá em "APIs e Serviços" > "Biblioteca" e pesquise por **Google Drive API** e **Google Sheets API**. Ative as duas.
-4. Vá em "APIs e Serviços" > "Credenciais".
-5. Clique em **Criar Credenciais** > **Conta de Serviço**. Preencha o nome (ex: `edgebench-sync`) e conclua.
-6. Na lista de Contas de Serviço, clique na que você acabou de criar. Note que ela tem um e-mail longo (ex: `edgebench-sync@projeto-id.iam.gserviceaccount.com`). Copie esse e-mail!
-7. Vá na aba "Chaves" > "Adicionar Chave" > "Criar nova chave".
-8. Escolha o formato **JSON** e clique em Criar. O arquivo será baixado para o seu computador.
-9. Renomeie esse arquivo para `google-credentials.json` e cole-o dentro da pasta `/app/` no servidor/Host.
-
-#### 2. Configurar a Pasta no Google Drive
-1. Abra seu [Google Drive](https://drive.google.com/).
-2. Crie uma nova pasta (ex: `Relatórios EdgeBench`).
-3. Clique com o botão direito na pasta > Compartilhar.
-4. Cole o e-mail longo da Conta de Serviço que você copiou no passo 6 e dê permissão de **Editor**.
-5. Abra a pasta. Olhe a URL no navegador, ela será algo como `drive.google.com/drive/folders/1A2b3C4d5E_xyz`. A string após `/folders/` é o **ID da Pasta**.
-
-#### 3. Inserir no Backend
-Abra o arquivo `/app/.env` (crie-o a partir do `.env.example` se não tiver) e preencha as duas novas variáveis:
-
-```env
-GOOGLE_APPLICATION_CREDENTIALS=google-credentials.json
-GOOGLE_DRIVE_FOLDER_ID=seu_folder_id_copiado_do_passo_anterior
-```
-
-Após fazer isso, basta reiniciar o container para que ele leia as novas variáveis:
-```bash
-docker compose restart backend
-```
-
-Feito isso! Na próxima vez que der o horário agendado, o backend fará o upload e a planilha "EdgeBench_Relatorio" aparecerá na sua pasta do Google Drive, magicamente convertida em Google Sheets.
+Todos estão no `.gitignore` e **nunca devem ser commitados**.

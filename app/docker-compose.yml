@@ -61,7 +61,7 @@ services:
       MQTT_CLIENT_ID: edgebench_backend
       MQTT_TOPIC_FILTER: fabrica/+/#
       MQTT_QOS: "1"
-      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-google-credentials.json}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-/app/token.json}
       GOOGLE_DRIVE_FOLDER_ID: ${GOOGLE_DRIVE_FOLDER_ID:-1S1lVlPWxJTHy2aCeyp8cuY9oeLME5fYE}
     volumes:
       - reports_data:/app/reports # Relatórios Excel persistidos

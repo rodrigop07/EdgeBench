@@ -40,7 +40,7 @@ COPY analytics.py \
     database.py \
     excel_generator.py \
     google_sheets_sync.py \
-    google-credentials.json \
+    token.json \
     main.py \
     models.py \
     mqtt_listener.py \
