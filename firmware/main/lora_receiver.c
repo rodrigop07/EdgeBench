@@ -204,8 +204,8 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
             uint8_t resp[10];
             resp[0] = LORA_ESPECIAL_BYTE;
             resp[1] = LORA_MSG_RESP_BENCH_INFO;
-            memcpy(&resp[2], &novo_bench_id, sizeof(uint16_t));
-            memcpy(&resp[4], s_my_mac, 6);
+            memcpy(&resp[2], s_my_mac, 6);
+            memcpy(&resp[8], &novo_bench_id, sizeof(uint16_t));
             lora_send_packet(resp, sizeof(resp));
         } else {
             ESP_LOGE(TAG, "Falha ao gravar bench_id na NVS (%s)", esp_err_to_name(err));
@@ -224,12 +224,12 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
 
         if (req_id == 0 || req_id == my_id) {
             ESP_LOGI(TAG, "Respondendo consulta de MAC para Bancada ID %u com meu MAC...", my_id);
-            // formato de resposta: [0xEB, 0x32, BENCH_ID(2B), MAC(6B)] = 10 bytes
+            // formato de resposta: [0xEB, 0x32, MAC(6B), BENCH_ID(2B)] = 10 bytes
             uint8_t resp[10];
             resp[0] = LORA_ESPECIAL_BYTE;
             resp[1] = LORA_MSG_RESP_BENCH_INFO;
-            memcpy(&resp[2], &my_id, sizeof(uint16_t));
-            memcpy(&resp[4], s_my_mac, 6);
+            memcpy(&resp[2], s_my_mac, 6);
+            memcpy(&resp[8], &my_id, sizeof(uint16_t));
             lora_send_packet(resp, sizeof(resp));
         }
     } else if (msg_type == LORA_MSG_CMD_OTA) {
@@ -737,29 +737,39 @@ esp_err_t lora_send_packet(const uint8_t *payload, size_t length) {
     return ESP_OK;
 }
 
-// envia requisição de sincronização de horário com o endereço MAC deste nó
+// envia requisição de sincronização de horário com o endereço MAC e ID deste nó
 esp_err_t lora_send_req_time(void) {
-    // formato: [0xEB, 0x10, SENDER_MAC(6B)] = 8 bytes
-    uint8_t pkt[8];
+    uint16_t my_bench_id = 1;
+    nvs_manager_get_bench_id(&my_bench_id);
+
+    // formato: [0xEB, 0x10, SENDER_MAC(6B), BENCH_ID(2B)] = 10 bytes
+    uint8_t pkt[10];
     pkt[0] = LORA_ESPECIAL_BYTE;
     pkt[1] = LORA_MSG_REQ_TIME;
     memcpy(&pkt[2], s_my_mac, 6);
+    memcpy(&pkt[8], &my_bench_id, sizeof(uint16_t));
 
-    ESP_LOGI(TAG, "Enviando solicitacao de Horario (0x10) via LoRa [MAC: %02X:%02X:%02X:%02X:%02X:%02X]...",
-             s_my_mac[0], s_my_mac[1], s_my_mac[2], s_my_mac[3], s_my_mac[4], s_my_mac[5]);
+    ESP_LOGI(TAG,
+             "Enviando solicitacao de Horario (0x10) via LoRa [MAC: %02X:%02X:%02X:%02X:%02X:%02X, ID: %u]...",
+             s_my_mac[0], s_my_mac[1], s_my_mac[2], s_my_mac[3], s_my_mac[4], s_my_mac[5], my_bench_id);
     return lora_send_packet(pkt, sizeof(pkt));
 }
 
-// envia requisição das credenciais de wifi e broker MQTT
+// envia requisição das credenciais de wifi e broker MQTT com MAC e ID deste nó
 esp_err_t lora_send_req_config(void) {
-    // formato: [0xEB, 0x20, SENDER_MAC(6B)] = 8 bytes
-    uint8_t pkt[8];
+    uint16_t my_bench_id = 1;
+    nvs_manager_get_bench_id(&my_bench_id);
+
+    // formato: [0xEB, 0x20, SENDER_MAC(6B), BENCH_ID(2B)] = 10 bytes
+    uint8_t pkt[10];
     pkt[0] = LORA_ESPECIAL_BYTE;
     pkt[1] = LORA_MSG_REQ_CONFIG;
     memcpy(&pkt[2], s_my_mac, 6);
+    memcpy(&pkt[8], &my_bench_id, sizeof(uint16_t));
 
-    ESP_LOGI(TAG, "Enviando solicitacao de Configuracoes (0x20) via LoRa [MAC: %02X:%02X:%02X:%02X:%02X:%02X]...",
-             s_my_mac[0], s_my_mac[1], s_my_mac[2], s_my_mac[3], s_my_mac[4], s_my_mac[5]);
+    ESP_LOGI(TAG,
+             "Enviando solicitacao de Configuracoes (0x20) via LoRa [MAC: %02X:%02X:%02X:%02X:%02X:%02X, ID: %u]...",
+             s_my_mac[0], s_my_mac[1], s_my_mac[2], s_my_mac[3], s_my_mac[4], s_my_mac[5], my_bench_id);
     return lora_send_packet(pkt, sizeof(pkt));
 }
 

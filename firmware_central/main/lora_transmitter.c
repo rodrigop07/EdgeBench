@@ -551,15 +551,20 @@ static void lora_rx_task(void *pvParameters) {
                         if (msg_type == LORA_MSG_REQ_TIME && payload_len >= 8) {
                             uint8_t sender_mac[6];
                             memcpy(sender_mac, &rx_buffer[2], 6);
-                            ESP_LOGI(TAG, "[REQ_TIME] Recebido de bancada com MAC: %02X:%02X:%02X:%02X:%02X:%02X",
-                                     sender_mac[0], sender_mac[1], sender_mac[2], sender_mac[3], sender_mac[4],
-                                     sender_mac[5]);
+                            uint16_t sender_id = 0;
+                            if (payload_len >= 10) {
+                                memcpy(&sender_id, &rx_buffer[8], sizeof(uint16_t));
+                            }
+                            ESP_LOGI(TAG,
+                                     "[REQ_TIME] Recebido de Bancada ID %u (MAC: %02X:%02X:%02X:%02X:%02X:%02X)",
+                                     sender_id, sender_mac[0], sender_mac[1], sender_mac[2], sender_mac[3],
+                                     sender_mac[4], sender_mac[5]);
 
                             time_t now = time(NULL);
                             struct tm ti;
                             localtime_r(&now, &ti);
                             if (ti.tm_year >= (2024 - 1900)) {
-                                // responde o timestamp em broadcast para qualquer qualquer bancada sem horário
+                                // responde o timestamp em broadcast para qualquer bancada sem horário
                                 uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
                                 lora_send_resp_time(broadcast_mac, (uint64_t)now);
                             } else {
@@ -569,9 +574,14 @@ static void lora_rx_task(void *pvParameters) {
                         } else if (msg_type == LORA_MSG_REQ_CONFIG && payload_len >= 8) {
                             uint8_t sender_mac[6];
                             memcpy(sender_mac, &rx_buffer[2], 6);
-                            ESP_LOGI(TAG, "[REQ_CONFIG] Recebido de bancada com MAC: %02X:%02X:%02X:%02X:%02X:%02X",
-                                     sender_mac[0], sender_mac[1], sender_mac[2], sender_mac[3], sender_mac[4],
-                                     sender_mac[5]);
+                            uint16_t sender_id = 0;
+                            if (payload_len >= 10) {
+                                memcpy(&sender_id, &rx_buffer[8], sizeof(uint16_t));
+                            }
+                            ESP_LOGI(TAG,
+                                     "[REQ_CONFIG] Recebido de Bancada ID %u (MAC: %02X:%02X:%02X:%02X:%02X:%02X)",
+                                     sender_id, sender_mac[0], sender_mac[1], sender_mac[2], sender_mac[3],
+                                     sender_mac[4], sender_mac[5]);
 
                             char ssid[33] = {0};
                             char pass[65] = {0};
@@ -583,10 +593,10 @@ static void lora_rx_task(void *pvParameters) {
                             lora_send_resp_config(sender_mac, ssid, pass, broker);
                             // bancada respondendo consulta de identificação (ID e MAC)
                         } else if (msg_type == LORA_MSG_RESP_BENCH_INFO && payload_len >= 10) {
-                            uint16_t b_id = 0;
-                            memcpy(&b_id, &rx_buffer[2], sizeof(uint16_t));
                             uint8_t b_mac[6];
-                            memcpy(b_mac, &rx_buffer[4], 6);
+                            memcpy(b_mac, &rx_buffer[2], 6);
+                            uint16_t b_id = 0;
+                            memcpy(&b_id, &rx_buffer[8], sizeof(uint16_t));
                             ESP_LOGI(TAG,
                                      "[RESP_BENCH_INFO] Bancada ID %u respondeu, MAC: %02X:%02X:%02X:%02X:%02X:%02X",
                                      b_id, b_mac[0], b_mac[1], b_mac[2], b_mac[3], b_mac[4], b_mac[5]);

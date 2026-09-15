@@ -86,11 +86,11 @@ void app_main(void) {
     char wifi_pass[65] = {0};
     nvs_manager_get_wifi_credentials(wifi_ssid, sizeof(wifi_ssid), wifi_pass, sizeof(wifi_pass));
 
-    if (wifi_ssid[0] == '\0') {
-        ESP_LOGW(TAG, "Nenhuma credencial Wi-Fi encontrada na NVS, solicitando via LoRa...");
+    if (wifi_ssid[0] == '\0' || strcmp(wifi_ssid, "pnat") == 0) {
+        ESP_LOGW(TAG, "Credencial Wi-Fi padrão ou vazia ('%s'). Solicitando credenciais via LoRa...", wifi_ssid);
         lora_send_req_config();
-        // aguarda até 3 segundos caso a Central responda de imediato
-        vTaskDelay(pdMS_TO_TICKS(3000));
+        // aguarda até 2 segundos caso a Central responda de imediato
+        vTaskDelay(pdMS_TO_TICKS(2000));
         nvs_manager_get_wifi_credentials(wifi_ssid, sizeof(wifi_ssid), wifi_pass, sizeof(wifi_pass));
     }
 

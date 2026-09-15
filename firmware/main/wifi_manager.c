@@ -2,13 +2,38 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
+#include "lora_receiver.h"
+#include <ctype.h>
 #include <string.h>
 
 static const char *TAG = "WIFI_MGR";
 static esp_netif_t *s_sta_netif = NULL;
 static bool s_is_connected = false;
 static bool s_is_reconfiguring = false;
+static esp_timer_handle_t s_reconnect_timer = NULL;
+static uint8_t s_consecutive_failures = 0;
+#define WIFI_MAX_FAILURES_BEFORE_LORA_REQ 3
+
+static void trim_str(char *str) {
+    if (str == NULL) {
+        return;
+    }
+    // remove caracteres de controle e espaços no fim
+    size_t len = strlen(str);
+    while (len > 0 && (isspace((unsigned char)str[len - 1]) || str[len - 1] == '\r' || str[len - 1] == '\n')) {
+        str[--len] = '\0';
+    }
+    // remove no início
+    char *start = str;
+    while (*start && (isspace((unsigned char)*start) || *start == '\r' || *start == '\n')) {
+        start++;
+    }
+    if (start != str) {
+        memmove(str, start, strlen(start) + 1);
+    }
+}
 
 static const char *wifi_disconn_reason_to_str(uint8_t reason) {
     switch (reason) {
@@ -45,6 +70,13 @@ static const char *wifi_disconn_reason_to_str(uint8_t reason) {
     }
 }
 
+static void reconnect_timer_callback(void *arg) {
+    if (!s_is_reconfiguring && !s_is_connected) {
+        ESP_LOGI(TAG, "Tentando reconectar ao Wi-Fi agora...");
+        esp_wifi_connect();
+    }
+}
+
 /**
  * @brief manipulador de eventos unificado para conexão e reconexão WiFi
  */
@@ -58,14 +90,25 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         uint8_t reason = disconn ? disconn->reason : 0;
         ESP_LOGW(TAG, "Wi-Fi desconectado (motivo: %u - %s).", reason, wifi_disconn_reason_to_str(reason));
 
-        // se nao estiver em meio a uma reconfiguração explícita, tenta reconectar
+        if (reason == 201) { // WIFI_REASON_NO_AP_FOUND
+            ESP_LOGW(TAG,
+                     "[AVISO] Verifique se a rede Wi-Fi opera em 2.4 GHz (ESP32 nao suporta 5 GHz) e se o SSID esta "
+                     "correto.");
+        }
+
+        // se nao estiver em meio a uma reconfiguração explícita, agenda reconexão não bloqueante via timer
         if (!s_is_reconfiguring) {
-            ESP_LOGI(TAG, "Tentando reconectar em 2s...");
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            esp_wifi_connect();
+            ESP_LOGI(TAG, "Agendando tentativa de reconexao em 2 segundos...");
+            if (s_reconnect_timer != NULL) {
+                esp_timer_stop(s_reconnect_timer);
+                esp_timer_start_once(s_reconnect_timer, 2000000); // 2 segundos (em microssegundos)
+            }
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         s_is_connected = true;
+        if (s_reconnect_timer != NULL) {
+            esp_timer_stop(s_reconnect_timer);
+        }
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "Wi-Fi conectado com sucesso, endereco IP obtido: " IPSTR, IP2STR(&event->ip_info.ip));
     }
@@ -81,6 +124,14 @@ esp_err_t wifi_manager_init_sta(const char *ssid, const char *password) {
         s_sta_netif = esp_netif_create_default_wifi_sta();
     }
 
+    if (s_reconnect_timer == NULL) {
+        const esp_timer_create_args_t timer_args = {
+            .callback = &reconnect_timer_callback,
+            .name = "wifi_reconnect_tmr",
+        };
+        esp_timer_create(&timer_args, &s_reconnect_timer);
+    }
+
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_err_t ret = esp_wifi_init(&cfg);
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
@@ -88,17 +139,39 @@ esp_err_t wifi_manager_init_sta(const char *ssid, const char *password) {
         return ret;
     }
 
+    // configura código de país para o Brasil (habilita canais 1 a 13)
+    wifi_country_t country = {
+        .cc = "BR",
+        .schan = 1,
+        .nchan = 13,
+        .max_tx_power = 20,
+        .policy = WIFI_COUNTRY_POLICY_AUTO,
+    };
+    esp_wifi_set_country(&country);
+
     esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL);
     esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL);
 
+    char clean_ssid[33] = {0};
+    strncpy(clean_ssid, ssid, sizeof(clean_ssid) - 1);
+    trim_str(clean_ssid);
+
     wifi_config_t wifi_config = {0};
-    strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
+    strncpy((char *)wifi_config.sta.ssid, clean_ssid, sizeof(wifi_config.sta.ssid) - 1);
+
     if (password != NULL && strlen(password) > 0) {
-        strncpy((char *)wifi_config.sta.password, password, sizeof(wifi_config.sta.password) - 1);
-        wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA_PSK;
-    } else {
-        wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
+        char clean_pass[65] = {0};
+        strncpy(clean_pass, password, sizeof(clean_pass) - 1);
+        trim_str(clean_pass);
+        strncpy((char *)wifi_config.sta.password, clean_pass, sizeof(wifi_config.sta.password) - 1);
     }
+
+    // scan completo em todos os canais e conexão pelo melhor sinal
+    wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    wifi_config.sta.threshold.rssi = -127;
+
     // habilita PMF (Protected Management Frames) para compatibilidade com roteadores modernos e WPA3 Transition
     wifi_config.sta.pmf_cfg.capable = true;
     wifi_config.sta.pmf_cfg.required = false;
@@ -107,7 +180,7 @@ esp_err_t wifi_manager_init_sta(const char *ssid, const char *password) {
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "Wi-Fi STA configurado e iniciado para SSID: '%s'", ssid);
+    ESP_LOGI(TAG, "Wi-Fi STA configurado e iniciado para SSID: '%s' (canais 1-13)", clean_ssid);
     return ESP_OK;
 }
 
@@ -123,24 +196,40 @@ esp_err_t wifi_manager_reconfigure(const char *ssid, const char *password) {
         return wifi_manager_init_sta(ssid, password);
     }
 
-    ESP_LOGI(TAG, "Reconfigurando Wi-Fi para novo SSID: '%s'...", ssid);
+    char clean_ssid[33] = {0};
+    strncpy(clean_ssid, ssid, sizeof(clean_ssid) - 1);
+    trim_str(clean_ssid);
 
-    // ativa flag para evitar que a ISR tente reconectar na rede antiga
+    ESP_LOGI(TAG, "Reconfigurando Wi-Fi para novo SSID: '%s'...", clean_ssid);
+
+    // cancela qualquer tentativa de reconexão anterior agendada
+    if (s_reconnect_timer != NULL) {
+        esp_timer_stop(s_reconnect_timer);
+    }
+
+    // ativa flag para evitar que a ISR tente reconectar na rede antiga durante o processo
     s_is_reconfiguring = true;
     s_is_connected = false;
+    s_consecutive_failures = 0;
 
     // para o driver de Wi-Fi para resetar limpo a máquina de estados
     esp_wifi_disconnect();
     esp_wifi_stop();
 
     wifi_config_t wifi_config = {0};
-    strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
+    strncpy((char *)wifi_config.sta.ssid, clean_ssid, sizeof(wifi_config.sta.ssid) - 1);
+
     if (password != NULL && strlen(password) > 0) {
-        strncpy((char *)wifi_config.sta.password, password, sizeof(wifi_config.sta.password) - 1);
-        wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA_PSK;
-    } else {
-        wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
+        char clean_pass[65] = {0};
+        strncpy(clean_pass, password, sizeof(clean_pass) - 1);
+        trim_str(clean_pass);
+        strncpy((char *)wifi_config.sta.password, clean_pass, sizeof(wifi_config.sta.password) - 1);
     }
+
+    wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    wifi_config.sta.threshold.rssi = -127;
     wifi_config.sta.pmf_cfg.capable = true;
     wifi_config.sta.pmf_cfg.required = false;
 
@@ -152,14 +241,15 @@ esp_err_t wifi_manager_reconfigure(const char *ssid, const char *password) {
     }
 
     ret = esp_wifi_start();
-    s_is_reconfiguring = false;
-
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Falha ao reiniciar Wi-Fi (%s)", esp_err_to_name(ret));
+        s_is_reconfiguring = false;
         return ret;
     }
 
-    ESP_LOGI(TAG, "Conectando a nova rede Wi-Fi '%s'...", ssid);
+    s_is_reconfiguring = false;
+
+    ESP_LOGI(TAG, "Wi-Fi reiniciado, conectando a rede '%s'...", clean_ssid);
     return esp_wifi_connect();
 }
 
