@@ -9,6 +9,7 @@
 #include "freertos/task.h"
 #include "mqtt_manager.h"
 #include "nvs_manager.h"
+#include "ota_manager.h"
 #include "wifi_manager.h"
 #include <string.h>
 #include <sys/time.h>
@@ -228,6 +229,48 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
             memcpy(&resp[2], &my_id, sizeof(uint16_t));
             memcpy(&resp[4], s_my_mac, 6);
             lora_send_packet(resp, sizeof(resp));
+        }
+    } else if (msg_type == LORA_MSG_CMD_OTA) {
+        // formato: [0xEB, 0x40, TARGET_BENCH_ID(2B), TOKEN(4B), URL_LEN(1B), URL(N_BYTES)] = 9 + N bytes
+        if (length < 9) {
+            ESP_LOGW(TAG, "Pacote CMD_OTA com tamanho insuficiente (%d bytes)", (int)length);
+            return;
+        }
+
+        uint32_t token = 0;
+        memcpy(&token, &payload[4], sizeof(uint32_t));
+        if (token != LORA_SECURITY_TOKEN) {
+            ESP_LOGW(TAG, "CMD_OTA rejeitado: Token invalido (0x%08lX)", (unsigned long)token);
+            return;
+        }
+
+        uint16_t target_id = 0;
+        memcpy(&target_id, &payload[2], sizeof(uint16_t));
+
+        uint16_t my_id = 0;
+        nvs_manager_get_bench_id(&my_id);
+
+        if (target_id != 0 && target_id != my_id) {
+            ESP_LOGD(TAG, "CMD_OTA direcionado a outra bancada (Alvo: %u, Meu ID: %u), ignorando", target_id, my_id);
+            return;
+        }
+
+        uint8_t url_len = payload[8];
+        if (url_len == 0 || url_len > 180 || length < (size_t)(9 + url_len)) {
+            ESP_LOGW(TAG, "CMD_OTA com tamanho de URL invalido (%u)", url_len);
+            return;
+        }
+
+        char ota_url[192] = {0};
+        memcpy(ota_url, &payload[9], url_len);
+        ota_url[url_len] = '\0';
+
+        ESP_LOGI(TAG, "Comando de OTA recebido via LoRa, URL: %s", ota_url);
+        esp_err_t ret = ota_manager_start(ota_url);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Atualizacao OTA disparada com sucesso via LoRa");
+        } else {
+            ESP_LOGW(TAG, "Falha ao disparar OTA via LoRa: %s", esp_err_to_name(ret));
         }
     } else {
         ESP_LOGD(TAG, "Tipo de mensagem LoRa desconhecido ou ignorado (0x%02X)", msg_type);

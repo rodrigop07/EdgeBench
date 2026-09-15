@@ -19,6 +19,7 @@
 #include "lora_receiver.h"
 #include "mqtt_manager.h"
 #include "nvs_manager.h"
+#include "ota_manager.h"
 #include "sensor_manager.h"
 #include "storage_manager.h"
 #include "wifi_manager.h"
@@ -37,9 +38,14 @@ void app_main(void) {
     esp_log_level_set("STORAGE_MGR", ESP_LOG_INFO);
     esp_log_level_set("LORA_RCV", ESP_LOG_INFO);
     esp_log_level_set("NVS_MGR", ESP_LOG_INFO);
+    esp_log_level_set("OTA_MGR", ESP_LOG_INFO);
 
     // inicializa o sistema NVS
     ESP_ERROR_CHECK(nvs_manager_init());
+
+    // inicializa e valida a imagem OTA atual cancelando rollback automático
+    ESP_ERROR_CHECK(ota_manager_init());
+    ota_manager_validate_boot();
 
     // instala serviço de interrupções GPIO
     esp_err_t isr_err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);

@@ -477,6 +477,32 @@ esp_err_t lora_send_req_bench_info(uint16_t target_bench_id) {
     return lora_send_packet(pkt, sizeof(pkt));
 }
 
+// envia comando de atualização OTA direcionado por ID (ou 0 para todas as bancadas)
+esp_err_t lora_send_cmd_ota(uint16_t target_bench_id, const char *url) {
+    if (url == NULL || strlen(url) == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    size_t url_len = strlen(url);
+    if (url_len > 180) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    uint32_t token = LORA_SECURITY_TOKEN;
+    // formato: [0xEB, 0x40, TARGET_ID(2B), TOKEN(4B), URL_LEN(1B), URL(N_BYTES)] = 9 + N bytes
+    size_t pkt_size = 9 + url_len;
+    uint8_t pkt[pkt_size];
+    pkt[0] = LORA_ESPECIAL_BYTE;
+    pkt[1] = LORA_MSG_CMD_OTA;
+    memcpy(&pkt[2], &target_bench_id, sizeof(uint16_t));
+    memcpy(&pkt[4], &token, sizeof(uint32_t));
+    pkt[8] = (uint8_t)url_len;
+    memcpy(&pkt[9], url, url_len);
+
+    ESP_LOGI(TAG, "Enviando CMD_OTA (Alvo ID: %u, URL: %s)...", target_bench_id, url);
+    return lora_send_packet(pkt, pkt_size);
+}
+
 static void lora_rx_task(void *pvParameters) {
     ESP_LOGI(TAG, "Tarefa de escuta RX iniciada (Core 0)");
 

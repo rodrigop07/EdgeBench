@@ -7,9 +7,14 @@ Permite:
 3. Testar a conectividade e monitorar a o status do ESP32 via porta serial
 """
 
+import http.server
 import json
 import logging
+import os
+import socket
+import socketserver
 import sys
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -21,12 +26,102 @@ except ImportError:
     print("Para instalar, execute: pip install pyserial\n")
     serial = None
 
+try:
+    import paho.mqtt.client as mqtt
+except ImportError:
+    mqtt = None
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] (%(name)s) %(message)s",
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("EdgeBench_Serial")
+
+# garante que o módulo config da pasta app seja importável
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from config import mqtt_config
+    DEFAULT_MQTT_HOST = mqtt_config.host
+    DEFAULT_MQTT_PORT = mqtt_config.port
+except Exception:
+    DEFAULT_MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
+    DEFAULT_MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+
+DEFAULT_BUILD_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "firmware", "build")
+)
+
+
+class LocalOTAServer:
+    """Servidor HTTP local em background para servir o binário firmware.bin para OTA"""
+
+    def __init__(self, directory: str = DEFAULT_BUILD_DIR, port: int = 8080):
+        self.directory = directory
+        self.port = port
+        self.httpd = None
+        self.thread = None
+        self.is_running = False
+
+    @staticmethod
+    def get_local_ip() -> str:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return "127.0.0.1"
+
+    def start(self) -> bool:
+        if self.is_running:
+            return True
+
+        if not os.path.exists(self.directory):
+            logger.error(f"Diretório não encontrado: {self.directory}")
+            return False
+
+        server_dir = self.directory
+
+        class CustomHandler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=server_dir, **kwargs)
+
+            def log_message(self, fmt, *args):
+                logger.info(f"[HTTP OTA] {self.client_address[0]} - {fmt % args}")
+
+        try:
+            socketserver.TCPServer.allow_reuse_address = True
+            self.httpd = socketserver.TCPServer(("", self.port), CustomHandler)
+            self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+            self.thread.start()
+            self.is_running = True
+            local_ip = self.get_local_ip()
+            logger.info(f"Servidor HTTP OTA iniciado em http://{local_ip}:{self.port}")
+            logger.info(f"Servindo pasta de build: {self.directory}")
+            return True
+        except Exception as e:
+            logger.error(f"Erro ao iniciar servidor HTTP na porta {self.port}: {e}")
+            self.httpd = None
+            self.is_running = False
+            return False
+
+    def stop(self):
+        if self.httpd and self.is_running:
+            try:
+                self.httpd.shutdown()
+                self.httpd.server_close()
+            except Exception as e:
+                logger.warning(f"Erro ao encerrar servidor HTTP: {e}")
+        self.httpd = None
+        self.thread = None
+        self.is_running = False
+        logger.info("Servidor HTTP OTA encerrado")
+
+    def get_firmware_url(self) -> str:
+        local_ip = self.get_local_ip()
+        return f"http://{local_ip}:{self.port}/firmware.bin"
 
 
 class EdgeBenchGateway:
@@ -208,6 +303,126 @@ class EdgeBenchGateway:
         logger.info("Solicitando emissao imediata de Beacon LoRa...")
         return self.send_command({"cmd": "beacon_now"})
 
+    def trigger_ota_lora(self, url: str, target_bench_id: int = 0) -> Optional[Dict[str, Any]]:
+        # emite comando via rádio LoRa para iniciar atualização OTA nas bancadas
+        logger.info(f"Disparando comando LoRa de OTA (Alvo ID: {target_bench_id or 'Todas'}) para URL: {url}")
+        return self.send_command({"cmd": "trigger_ota", "url": url, "target_id": target_bench_id})
+
+    def publish_ota_mqtt(
+        self,
+        url: str,
+        target_bench_id: int = 0,
+        broker_host: Optional[str] = None,
+        broker_port: Optional[int] = None,
+    ) -> bool:
+        # publica comando de atualização OTA via Broker MQTT
+        if mqtt is None:
+            logger.error("Biblioteca paho-mqtt não disponível no ambiente Python")
+            return False
+
+        host = broker_host or DEFAULT_MQTT_HOST
+        port = broker_port or DEFAULT_MQTT_PORT
+        topic = f"fabrica/bancada_{target_bench_id}/ota" if target_bench_id > 0 else "fabrica/todas/ota"
+        payload = json.dumps({"cmd": "update", "url": url})
+
+        try:
+            logger.info(f"Conectando ao broker MQTT Mosquitto {host}:{port}...")
+            client = mqtt.Client()
+            client.connect(host, port, 60)
+            logger.info(f"Publicando comando OTA no tópico MQTT '{topic}'...")
+            client.publish(topic, payload, qos=1)
+            time.sleep(0.5)
+            client.disconnect()
+            logger.info("Comando OTA publicado com sucesso via Mosquitto!")
+            return True
+        except Exception as e:
+            logger.error(f"Falha ao publicar comando OTA via Mosquitto ({host}:{port}): {e}")
+            return False
+
+
+def _dispatch_ota(gw: EdgeBenchGateway, url: str):
+    target_str = input("Digite o ID da bancada alvo (1 a 65535, ou 0 para TODAS) [0]: ").strip()
+    target_id = int(target_str) if target_str.isdigit() else 0
+
+    print("\nEscolha o canal de transmissão do comando:")
+    print("  [1] Apenas via Rádio LoRa (Central USB -> Bancadas)")
+    print(f"  [2] Apenas via Broker MQTT Mosquitto local ({DEFAULT_MQTT_HOST}:{DEFAULT_MQTT_PORT})")
+    print("  [3] Ambos (LoRa + MQTT Mosquitto - Máxima Redundância) [Padrão]")
+    channel = input("Opcao [3]: ").strip() or "3"
+
+    print(f"\n[INFO] Disparando OTA para URL: {url} (Alvo ID: {target_id or 'Todas'})...")
+
+    if channel in ("1", "3"):
+        res = gw.trigger_ota_lora(url, target_bench_id=target_id)
+        print(f"-> Resposta Gateway LoRa: {res}")
+
+    if channel in ("2", "3"):
+        target_topic = f"fabrica/bancada_{target_id}/ota" if target_id != 0 else "fabrica/todas/ota"
+        print(f"\n[MQTT] Publicando ordem de OTA no tópico: '{target_topic}' via Mosquitto ({DEFAULT_MQTT_HOST}:{DEFAULT_MQTT_PORT})...")
+        res_mqtt = gw.publish_ota_mqtt(url, target_bench_id=target_id)
+        print(f"-> Envio via Broker Mosquitto ({DEFAULT_MQTT_HOST}:{DEFAULT_MQTT_PORT}): {'Sucesso' if res_mqtt else 'Falha'}")
+
+    print("\n[INFO] Comando enviado! As bancadas iniciarão o download via Wi-Fi")
+    print("Monitore as requisições HTTP do download nos logs da aplicação\n")
+
+
+def ota_management_menu(gw: EdgeBenchGateway, ota_server: LocalOTAServer):
+    while True:
+        local_ip = LocalOTAServer.get_local_ip()
+        bin_path = os.path.join(ota_server.directory, "firmware.bin")
+        has_bin = os.path.exists(bin_path)
+        bin_size_kb = os.path.getsize(bin_path) // 1024 if has_bin else 0
+        server_status = f"ATIVO em http://{local_ip}:{ota_server.port}" if ota_server.is_running else "PARADO"
+
+        print("\n" + "=" * 60)
+        print("    EdgeBench - Gerenciador de Atualização OTA")
+        print("=" * 60)
+        print(f" IP Local da Máquina  : {local_ip}")
+        print(f" Arquivo firmware.bin : {'ENCONTRADO (' + str(bin_size_kb) + ' KB)' if has_bin else 'NÃO ENCONTRADO em ' + bin_path}")
+        print(f" Servidor HTTP Local  : [{server_status}]")
+        print("-" * 60)
+        print("  [1] Disparo Rápido com Servidor Local Automático (Recomendado)")
+        print("  [2] Disparar OTA informando URL personalizada")
+        print("  [3] Alternar Servidor HTTP Local (Iniciar / Parar)")
+        print("  [0] Voltar ao menu principal")
+
+        sub_choice = input("\nOpcao: ").strip()
+        if sub_choice == "1":
+            if not has_bin:
+                print(f"\n[ERRO] Arquivo {bin_path} não encontrado")
+                print("Execute 'idf.py build' na pasta firmware primeiro")
+                continue
+
+            if not ota_server.is_running:
+                if not ota_server.start():
+                    print("[ERRO] Falha ao iniciar servidor HTTP local")
+                    continue
+
+            url = ota_server.get_firmware_url()
+            _dispatch_ota(gw, url)
+
+        elif sub_choice == "2":
+            url = input("\nDigite a URL completa do firmware.bin: ").strip()
+            if not url:
+                print("URL vazia, cancelando")
+                continue
+            _dispatch_ota(gw, url)
+
+        elif sub_choice == "3":
+            if ota_server.is_running:
+                ota_server.stop()
+                print("-> Servidor HTTP parado")
+            else:
+                if ota_server.start():
+                    print(f"-> Servidor HTTP iniciado em http://{local_ip}:{ota_server.port}/firmware.bin")
+                else:
+                    print("-> Falha ao iniciar servidor HTTP")
+
+        elif sub_choice == "0":
+            break
+        else:
+            print("Opcao invalida")
+
 
 def interactive_menu(port: Optional[str] = None):
     # interface de linha de comando
@@ -221,6 +436,8 @@ def interactive_menu(port: Optional[str] = None):
         print("Verifique se o ESP32 Central esta conectado via cabo USB")
         sys.exit(1)
 
+    ota_server = LocalOTAServer(DEFAULT_BUILD_DIR, port=8080)
+
     try:
         while True:
             print("\nSelecione uma operacao:")
@@ -232,6 +449,7 @@ def interactive_menu(port: Optional[str] = None):
             print("  [6] Consultar MAC de uma Bancada via LoRa")
             print("  [7] Monitorar logs contínuos da Serial")
             print("  [8] Modo de Pareamento Rápido (Aguardando botão físico da bancada...)")
+            print("  [9] Gerenciar Atualização OTA de Firmware (Servidor Local / LoRa / MQTT)")
             print("  [0] Sair")
 
             choice = input("\nOpcao: ").strip()
@@ -249,10 +467,14 @@ def interactive_menu(port: Optional[str] = None):
                     res = gw.set_wifi(ssid, pwd)
                     print(f"-> Resposta: {res}")
             elif choice == "4":
-                url = input("Digite a nova URL do broker (ex: mqtt://192.168.1.100:1883): ").strip()
-                if url:
-                    res = gw.set_broker(url)
-                    print(f"-> Resposta: {res}")
+                local_ip = LocalOTAServer.get_local_ip()
+                default_broker = f"mqtt://{local_ip}:{DEFAULT_MQTT_PORT}"
+                url = input(
+                    f"Digite a nova URL do broker para as bancadas [Enter para Mosquitto local: {default_broker}]: "
+                ).strip()
+                url = url or default_broker
+                res = gw.set_broker(url)
+                print(f"-> Resposta: {res}")
             elif choice == "5":
                 target_str = input(
                     "Digite o ID ATUAL da bancada que deseja alterar (1 a 65535, ou 0 para qualquer): "
@@ -328,12 +550,15 @@ def interactive_menu(port: Optional[str] = None):
                         time.sleep(0.05)
                 except KeyboardInterrupt:
                     print("\n[INFO] Modo de pareamento encerrado, retornando ao menu")
+            elif choice == "9":
+                ota_management_menu(gw, ota_server)
             elif choice == "0":
                 print("Encerrando...")
                 break
             else:
                 print("Opcao invalida.")
     finally:
+        ota_server.stop()
         gw.disconnect()
 
 

@@ -163,6 +163,21 @@ static void process_json_command(const char *line) {
         } else {
             send_json_status("error", "lora_tx_failed");
         }
+    } else if (strcmp(cmd, "trigger_ota") == 0 || strcmp(cmd, "start_ota") == 0) {
+        cJSON *url_item = cJSON_GetObjectItem(root, "url");
+        cJSON *id_item = cJSON_GetObjectItem(root, "target_id");
+        uint16_t target_id = (id_item && cJSON_IsNumber(id_item)) ? (uint16_t)id_item->valueint : 0;
+
+        if (cJSON_IsString(url_item) && url_item->valuestring != NULL) {
+            esp_err_t err = lora_send_cmd_ota(target_id, url_item->valuestring);
+            if (err == ESP_OK) {
+                send_json_status("ok", "ota_cmd_transmitted");
+            } else {
+                send_json_status("error", "lora_tx_failed");
+            }
+        } else {
+            send_json_status("error", "missing_url");
+        }
     } else if (strcmp(cmd, "ping") == 0) {
         send_json_status("pong", "gateway_online");
     } else {

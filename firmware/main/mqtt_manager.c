@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "mqtt_client.h"
+#include "ota_manager.h"
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
@@ -21,6 +22,8 @@ static volatile int s_pending_puback_msg_id = -1;
 // buffers de tópicos dinâmicos por bancada
 static char s_topic_production[64];
 static char s_topic_status[64];
+static char s_topic_ota[64];
+static const char *s_topic_ota_broadcast = "fabrica/todas/ota";
 static char s_lwt_msg[64];
 
 static esp_mqtt5_user_property_item_t user_property_arr[] = {
@@ -35,6 +38,48 @@ static esp_mqtt5_publish_property_config_t publish_property = {
     .message_expiry_interval = 1000,
     .topic_alias = 0,
 };
+
+static bool parse_ota_url(const char *data, int data_len, char *out_url, size_t max_len) {
+    if (data == NULL || data_len <= 0 || out_url == NULL || max_len == 0) {
+        return false;
+    }
+    memset(out_url, 0, max_len);
+
+    // cria cópia segura terminada em nulo
+    char buf[256];
+    if (data_len >= (int)sizeof(buf)) {
+        return false;
+    }
+    memcpy(buf, data, data_len);
+    buf[data_len] = '\0';
+
+    // se começar diretamente com "http://" ou "https://"
+    if (strncmp(buf, "http://", 7) == 0 || strncmp(buf, "https://", 8) == 0) {
+        strncpy(out_url, buf, max_len - 1);
+        return true;
+    }
+
+    // se for um JSON contendo "url": "..."
+    char *url_pos = strstr(buf, "\"url\"");
+    if (url_pos != NULL) {
+        char *colon = strchr(url_pos, ':');
+        if (colon != NULL) {
+            char *quote1 = strchr(colon, '\"');
+            if (quote1 != NULL) {
+                char *quote2 = strchr(quote1 + 1, '\"');
+                if (quote2 != NULL) {
+                    size_t len = quote2 - (quote1 + 1);
+                    if (len > 0 && len < max_len) {
+                        memcpy(out_url, quote1 + 1, len);
+                        out_url[len] = '\0';
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
 
 static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) {
     esp_mqtt_event_handle_t event = event_data;
@@ -52,6 +97,14 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
                      (long long)(esp_timer_get_time() / 1000000ULL));
             esp_mqtt_client_publish(s_mqtt_client, s_topic_status, status_payload, 0, 1, 1);
             ESP_LOGI(TAG, "Status de conexao da bancada %u publicado em %s", s_bench_id, s_topic_status);
+
+            // inscreve nos tópicos de OTA da bancada e geral
+            if (strlen(s_topic_ota) > 0) {
+                esp_mqtt_client_subscribe(s_mqtt_client, s_topic_ota, 1);
+                ESP_LOGI(TAG, "Inscrito no topico de OTA: %s", s_topic_ota);
+            }
+            esp_mqtt_client_subscribe(s_mqtt_client, s_topic_ota_broadcast, 1);
+            ESP_LOGI(TAG, "Inscrito no topico de OTA broadcast: %s", s_topic_ota_broadcast);
         }
         break;
 
@@ -82,6 +135,28 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
     case MQTT_EVENT_DATA:
         ESP_LOGI(TAG, "MQTT_EVENT_DATA: TOPIC=%.*s DATA=%.*s", event->topic_len, event->topic, event->data_len,
                  event->data);
+
+        // verifica se é comando de atualização OTA
+        if ((event->topic_len == (int)strlen(s_topic_ota) && strncmp(event->topic, s_topic_ota, event->topic_len) == 0) ||
+            (event->topic_len == (int)strlen(s_topic_ota_broadcast) && strncmp(event->topic, s_topic_ota_broadcast, event->topic_len) == 0)) {
+            
+            char ota_url[192];
+            if (parse_ota_url(event->data, event->data_len, ota_url, sizeof(ota_url))) {
+                ESP_LOGI(TAG, "Comando de OTA recebido via MQTT! URL: %s", ota_url);
+                esp_err_t ota_ret = ota_manager_start(ota_url);
+                if (ota_ret == ESP_OK) {
+                    char resp[256];
+                    snprintf(resp, sizeof(resp), "{\"bancada\": %u, \"status\": \"ota_iniciando\", \"url\": \"%s\"}", s_bench_id, ota_url);
+                    esp_mqtt_client_publish(s_mqtt_client, s_topic_status, resp, 0, 1, 0);
+                } else if (ota_ret == ESP_ERR_INVALID_STATE) {
+                    char resp[128];
+                    snprintf(resp, sizeof(resp), "{\"bancada\": %u, \"status\": \"ota_recusado\", \"motivo\": \"ja_em_andamento\"}", s_bench_id);
+                    esp_mqtt_client_publish(s_mqtt_client, s_topic_status, resp, 0, 1, 0);
+                }
+            } else {
+                ESP_LOGW(TAG, "Comando de OTA recebido com formato de URL invalido");
+            }
+        }
         break;
 
     case MQTT_EVENT_ERROR:
@@ -98,7 +173,7 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
 
 esp_err_t mqtt_manager_start(const char *broker_uri, uint16_t bench_id) {
     if (broker_uri == NULL || strlen(broker_uri) == 0) {
-        ESP_LOGE(TAG, "URI do broker inválida");
+        ESP_LOGE(TAG, "URI do broker invalida");
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -107,12 +182,14 @@ esp_err_t mqtt_manager_start(const char *broker_uri, uint16_t bench_id) {
     // configura os tópicos padronizados da bancada
     snprintf(s_topic_production, sizeof(s_topic_production), "fabrica/bancada_%u/producao", s_bench_id);
     snprintf(s_topic_status, sizeof(s_topic_status), "fabrica/bancada_%u/status", s_bench_id);
+    snprintf(s_topic_ota, sizeof(s_topic_ota), "fabrica/bancada_%u/ota", s_bench_id);
     snprintf(s_lwt_msg, sizeof(s_lwt_msg), "{\"bancada\": %u, \"status\": \"offline\"}", s_bench_id);
 
     ESP_LOGI(TAG, "Iniciando cliente MQTT5 para bancada %u:", s_bench_id);
     ESP_LOGI(TAG, "  Broker: %s", broker_uri);
     ESP_LOGI(TAG, "  Topico Producao: %s", s_topic_production);
     ESP_LOGI(TAG, "  Topico Status/LWT: %s", s_topic_status);
+    ESP_LOGI(TAG, "  Topico OTA: %s", s_topic_ota);
 
     esp_mqtt5_connection_property_config_t connect_property = {
         .session_expiry_interval = 10,
