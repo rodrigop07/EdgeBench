@@ -101,3 +101,5 @@ app/token.json
 app/credentials.json
 app/client_secret.json
 app/google-credentials.json
+app/reports/
+*.xlsx

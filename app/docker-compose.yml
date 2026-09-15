@@ -62,10 +62,10 @@ services:
       MQTT_TOPIC_FILTER: fabrica/+/#
       MQTT_QOS: "1"
       GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-google-credentials.json}
-      GOOGLE_DRIVE_FOLDER_ID: ${GOOGLE_DRIVE_FOLDER_ID:-1S1lVlPWxJTHy2aCeyp8cuY9oeLME5fYE}
+      GOOGLE_DRIVE_FOLDER_ID: ${GOOGLE_DRIVE_FOLDER_ID:-}
     volumes:
-      - reports_data:/app/reports # Relatórios Excel persistidos
-      - ./token.json:/app/token.json # <--- ADICIONE ESTA LINHA
+      - ./reports:/app/reports # Relatórios Excel persistidos na pasta local do Host
+      - ./token.json:/app/token.json
     networks:
       - edgebench_net
     depends_on:
@@ -82,7 +82,6 @@ volumes:
   mosquitto_data:
   mosquitto_log:
   postgres_data:
-  reports_data:
 
 networks:
   edgebench_net:

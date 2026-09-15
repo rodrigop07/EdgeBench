@@ -34,19 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /install /usr/local
 
 # Copia o código-fonte da aplicação
-
-COPY analytics.py \
-    config.py \
-    database.py \
-    excel_generator.py \
-    google_sheets_sync.py \
-    google-credentials.json \
-    main.py \
-    models.py \
-    mqtt_listener.py \
-    scheduler.py \
-    .env.example \
-    ./
+COPY *.py .env.example ./
 
 # Cria diretório de relatórios com permissão de escrita
 RUN mkdir -p /app/reports && chmod 755 /app/reports
