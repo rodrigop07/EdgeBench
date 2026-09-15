@@ -591,7 +591,11 @@ static void lora_rx_task(void *pvParameters) {
                             central_nvs_get_wifi(ssid, sizeof(ssid), pass, sizeof(pass));
                             central_nvs_get_broker(broker, sizeof(broker));
 
-                            lora_send_resp_config(sender_mac, ssid, pass, broker);
+                            if (ssid[0] != '\0') {
+                                lora_send_resp_config(sender_mac, ssid, pass, broker);
+                            } else {
+                                ESP_LOGW(TAG, "[REQ_CONFIG] Central sem credenciais Wi-Fi cadastradas na NVS para enviar");
+                            }
                             // bancada respondendo consulta de identificação (ID e MAC)
                         } else if (msg_type == LORA_MSG_RESP_BENCH_INFO && payload_len >= 10) {
                             uint8_t b_mac[6];

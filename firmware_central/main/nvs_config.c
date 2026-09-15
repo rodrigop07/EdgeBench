@@ -11,10 +11,6 @@ static const char *TAG = "CENTRAL_NVS";
 #define KEY_WIFI_PASS "wifi_pass"
 #define KEY_BROKER_URL "broker_url"
 
-#define DEFAULT_WIFI_SSID "Fabrica_IoT"
-#define DEFAULT_WIFI_PASS "12345678"
-#define DEFAULT_BROKER_URL "mqtt://192.168.1.100:1883"
-
 esp_err_t central_nvs_init(void) {
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -54,29 +50,30 @@ esp_err_t central_nvs_get_wifi(char *ssid, size_t ssid_len, char *password, size
         return ESP_ERR_INVALID_ARG;
     }
 
+    memset(ssid, 0, ssid_len);
+    if (password && pass_len > 0) {
+        memset(password, 0, pass_len);
+    }
+
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
     if (err != ESP_OK) {
-        strncpy(ssid, DEFAULT_WIFI_SSID, ssid_len - 1);
-        ssid[ssid_len - 1] = '\0';
-        if (password && pass_len > 0) {
-            strncpy(password, DEFAULT_WIFI_PASS, pass_len - 1);
-            password[pass_len - 1] = '\0';
-        }
-        return ESP_OK;
+        return err;
     }
 
-    err = nvs_get_str(handle, KEY_WIFI_SSID, ssid, &ssid_len);
+    size_t s_len = ssid_len;
+    err = nvs_get_str(handle, KEY_WIFI_SSID, ssid, &s_len);
     if (err != ESP_OK) {
-        strncpy(ssid, DEFAULT_WIFI_SSID, ssid_len - 1);
-        ssid[ssid_len - 1] = '\0';
+        ssid[0] = '\0';
+        nvs_close(handle);
+        return err;
     }
 
     if (password && pass_len > 0) {
-        err = nvs_get_str(handle, KEY_WIFI_PASS, password, &pass_len);
-        if (err != ESP_OK) {
-            strncpy(password, DEFAULT_WIFI_PASS, pass_len - 1);
-            password[pass_len - 1] = '\0';
+        size_t p_len = pass_len;
+        esp_err_t p_err = nvs_get_str(handle, KEY_WIFI_PASS, password, &p_len);
+        if (p_err != ESP_OK) {
+            password[0] = '\0';
         }
     }
 
@@ -110,18 +107,20 @@ esp_err_t central_nvs_get_broker(char *broker_url, size_t broker_len) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    memset(broker_url, 0, broker_len);
+
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
     if (err != ESP_OK) {
-        strncpy(broker_url, DEFAULT_BROKER_URL, broker_len - 1);
-        broker_url[broker_len - 1] = '\0';
-        return ESP_OK;
+        return err;
     }
 
-    err = nvs_get_str(handle, KEY_BROKER_URL, broker_url, &broker_len);
+    size_t b_len = broker_len;
+    err = nvs_get_str(handle, KEY_BROKER_URL, broker_url, &b_len);
     if (err != ESP_OK) {
-        strncpy(broker_url, DEFAULT_BROKER_URL, broker_len - 1);
-        broker_url[broker_len - 1] = '\0';
+        broker_url[0] = '\0';
+        nvs_close(handle);
+        return err;
     }
 
     nvs_close(handle);

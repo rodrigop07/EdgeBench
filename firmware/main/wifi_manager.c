@@ -5,16 +5,29 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "lora_receiver.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include <ctype.h>
 #include <string.h>
 
 static const char *TAG = "WIFI_MGR";
 static esp_netif_t *s_sta_netif = NULL;
+static bool s_is_initialized = false;
 static bool s_is_connected = false;
 static bool s_is_reconfiguring = false;
 static esp_timer_handle_t s_reconnect_timer = NULL;
 static uint8_t s_consecutive_failures = 0;
+static char s_current_ssid[33] = {0};
+static SemaphoreHandle_t s_wifi_mutex = NULL;
+static StaticSemaphore_t s_wifi_mutex_buf;
+
 #define WIFI_MAX_FAILURES_BEFORE_LORA_REQ 3
+
+static void wifi_mutex_init_once(void) {
+    if (s_wifi_mutex == NULL) {
+        s_wifi_mutex = xSemaphoreCreateMutexStatic(&s_wifi_mutex_buf);
+    }
+}
 
 static void trim_str(char *str) {
     if (str == NULL) {
@@ -129,6 +142,27 @@ esp_err_t wifi_manager_init_sta(const char *ssid, const char *password) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    wifi_mutex_init_once();
+    xSemaphoreTake(s_wifi_mutex, portMAX_DELAY);
+
+    char clean_ssid[33] = {0};
+    strncpy(clean_ssid, ssid, sizeof(clean_ssid) - 1);
+    trim_str(clean_ssid);
+
+    if (s_is_initialized) {
+        // Se já está inicializado com o mesmo SSID, nada a fazer
+        if (strncmp(s_current_ssid, clean_ssid, sizeof(s_current_ssid)) == 0) {
+            ESP_LOGI(TAG, "Wi-Fi já inicializado para o SSID '%s'. Chamada redundante ignorada.", clean_ssid);
+            xSemaphoreGive(s_wifi_mutex);
+            return ESP_OK;
+        }
+
+        // Se o SSID for diferente, redireciona para reconfiguração segura
+        ESP_LOGI(TAG, "Wi-Fi já ativo, atualizando credenciais para novo SSID: '%s'...", clean_ssid);
+        xSemaphoreGive(s_wifi_mutex);
+        return wifi_manager_reconfigure(ssid, password);
+    }
+
     if (s_sta_netif == NULL) {
         s_sta_netif = esp_netif_create_default_wifi_sta();
     }
@@ -145,6 +179,7 @@ esp_err_t wifi_manager_init_sta(const char *ssid, const char *password) {
     esp_err_t ret = esp_wifi_init(&cfg);
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "Falha ao inicializar Wi-Fi (%s)", esp_err_to_name(ret));
+        xSemaphoreGive(s_wifi_mutex);
         return ret;
     }
 
@@ -160,10 +195,6 @@ esp_err_t wifi_manager_init_sta(const char *ssid, const char *password) {
 
     esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL);
     esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL);
-
-    char clean_ssid[33] = {0};
-    strncpy(clean_ssid, ssid, sizeof(clean_ssid) - 1);
-    trim_str(clean_ssid);
 
     wifi_config_t wifi_config = {0};
     strncpy((char *)wifi_config.sta.ssid, clean_ssid, sizeof(wifi_config.sta.ssid) - 1);
@@ -185,11 +216,36 @@ esp_err_t wifi_manager_init_sta(const char *ssid, const char *password) {
     wifi_config.sta.pmf_cfg.capable = true;
     wifi_config.sta.pmf_cfg.required = false;
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    ret = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Aviso ao definir modo STA (%s)", esp_err_to_name(ret));
+    }
+
+    ret = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    if (ret == ESP_ERR_WIFI_STATE) {
+        ESP_LOGW(TAG, "Wi-Fi em estado conectando ao aplicar config; parando para aplicar...");
+        esp_wifi_disconnect();
+        esp_wifi_stop();
+        ret = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    }
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Falha ao definir configuracao Wi-Fi (%s)", esp_err_to_name(ret));
+        xSemaphoreGive(s_wifi_mutex);
+        return ret;
+    }
+
+    ret = esp_wifi_start();
+    if (ret != ESP_OK && ret != ESP_ERR_WIFI_STATE) {
+        ESP_LOGE(TAG, "Falha ao iniciar Wi-Fi (%s)", esp_err_to_name(ret));
+        xSemaphoreGive(s_wifi_mutex);
+        return ret;
+    }
+
+    strncpy(s_current_ssid, clean_ssid, sizeof(s_current_ssid) - 1);
+    s_is_initialized = true;
 
     ESP_LOGI(TAG, "Wi-Fi STA configurado e iniciado para SSID: '%s' (canais 1-13)", clean_ssid);
+    xSemaphoreGive(s_wifi_mutex);
     return ESP_OK;
 }
 
@@ -199,9 +255,13 @@ esp_err_t wifi_manager_reconfigure(const char *ssid, const char *password) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    wifi_mutex_init_once();
+    xSemaphoreTake(s_wifi_mutex, portMAX_DELAY);
+
     // se a pilha de Wi-Fi ainda não foi inicializada (ex: NVS estava vazia no boot)
-    if (s_sta_netif == NULL) {
+    if (!s_is_initialized || s_sta_netif == NULL) {
         ESP_LOGI(TAG, "Pilha Wi-Fi ainda nao inicializada, inicializando pela primeira vez...");
+        xSemaphoreGive(s_wifi_mutex);
         return wifi_manager_init_sta(ssid, password);
     }
 
@@ -243,25 +303,40 @@ esp_err_t wifi_manager_reconfigure(const char *ssid, const char *password) {
     wifi_config.sta.pmf_cfg.required = false;
 
     esp_err_t ret = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    if (ret == ESP_ERR_WIFI_STATE) {
+        ESP_LOGW(TAG, "Aguardando parada completa da interface Wi-Fi...");
+        vTaskDelay(pdMS_TO_TICKS(50));
+        esp_wifi_disconnect();
+        esp_wifi_stop();
+        ret = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    }
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Falha ao definir nova configuracao Wi-Fi (%s)", esp_err_to_name(ret));
         s_is_reconfiguring = false;
+        xSemaphoreGive(s_wifi_mutex);
         return ret;
     }
 
     ret = esp_wifi_start();
-    if (ret != ESP_OK) {
+    if (ret != ESP_OK && ret != ESP_ERR_WIFI_STATE) {
         ESP_LOGE(TAG, "Falha ao reiniciar Wi-Fi (%s)", esp_err_to_name(ret));
         s_is_reconfiguring = false;
+        xSemaphoreGive(s_wifi_mutex);
         return ret;
     }
 
+    strncpy(s_current_ssid, clean_ssid, sizeof(s_current_ssid) - 1);
     s_is_reconfiguring = false;
 
     ESP_LOGI(TAG, "Wi-Fi reiniciado com SSID '%s', o driver irá reconectar automaticamente", clean_ssid);
+    xSemaphoreGive(s_wifi_mutex);
     return ESP_OK;
 }
 
 bool wifi_manager_is_connected(void) {
     return s_is_connected;
+}
+
+bool wifi_manager_is_initialized(void) {
+    return s_is_initialized;
 }

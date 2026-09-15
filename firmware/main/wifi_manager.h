@@ -26,4 +26,10 @@ esp_err_t wifi_manager_reconfigure(const char *ssid, const char *password);
  */
 bool wifi_manager_is_connected(void);
 
+/**
+ * @brief verifica se o Wi-Fi já foi inicializado
+ * @return true se inicializado, false caso contrário
+ */
+bool wifi_manager_is_initialized(void);
+
 #endif /* WIFI_MANAGER_H */

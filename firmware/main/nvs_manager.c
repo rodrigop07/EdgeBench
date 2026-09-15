@@ -145,13 +145,9 @@ esp_err_t nvs_manager_get_wifi_credentials(char *out_ssid, size_t max_ssid_len, 
     memset(out_pass, 0, max_pass_len);
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Erro ao abrir NVS para ler credenciais Wi-Fi (%s). Usando padroes.", esp_err_to_name(err));
-        strncpy(out_ssid, CONFIG_EXAMPLE_WIFI_SSID, max_ssid_len - 1);
-        out_ssid[max_ssid_len - 1] = '\0';
-        strncpy(out_pass, CONFIG_EXAMPLE_WIFI_PASSWORD, max_pass_len - 1);
-        out_pass[max_pass_len - 1] = '\0';
+        ESP_LOGW(TAG, "Nenhuma credencial Wi-Fi salva na NVS (%s)", esp_err_to_name(err));
         return err;
     }
 
@@ -159,31 +155,18 @@ esp_err_t nvs_manager_get_wifi_credentials(char *out_ssid, size_t max_ssid_len, 
     size_t required_ssid_len = max_ssid_len;
     err = nvs_get_str(handle, "wifi_ssid", out_ssid, &required_ssid_len);
     if (err != ESP_OK) {
-        if (err == ESP_ERR_NVS_NOT_FOUND) {
-            ESP_LOGW(TAG, "SSID não encontrado na NVS. Usando padrão: %s", CONFIG_EXAMPLE_WIFI_SSID);
-        } else {
-            ESP_LOGW(TAG, "Erro ao ler 'wifi_ssid' da NVS (%s). Usando padrão: %s", esp_err_to_name(err),
-                     CONFIG_EXAMPLE_WIFI_SSID);
-        }
-        strncpy(out_ssid, CONFIG_EXAMPLE_WIFI_SSID, max_ssid_len - 1);
-        out_ssid[max_ssid_len - 1] = '\0';
-        nvs_set_str(handle, "wifi_ssid", out_ssid);
-        nvs_commit(handle);
+        ESP_LOGW(TAG, "SSID Wi-Fi não encontrado na NVS (%s)", esp_err_to_name(err));
+        out_ssid[0] = '\0';
+        out_pass[0] = '\0';
+        nvs_close(handle);
+        return err;
     }
 
-    // lê a Senha
+    // lê a Senha (opcional, suporta rede aberta caso vazia)
     size_t required_pass_len = max_pass_len;
-    err = nvs_get_str(handle, "wifi_pass", out_pass, &required_pass_len);
-    if (err != ESP_OK) {
-        if (err == ESP_ERR_NVS_NOT_FOUND) {
-            ESP_LOGW(TAG, "Senha de Wi-Fi não encontrada na NVS. Usando padrão.");
-        } else {
-            ESP_LOGW(TAG, "Erro ao ler 'wifi_pass' da NVS (%s). Usando padrão.", esp_err_to_name(err));
-        }
-        strncpy(out_pass, CONFIG_EXAMPLE_WIFI_PASSWORD, max_pass_len - 1);
-        out_pass[max_pass_len - 1] = '\0';
-        nvs_set_str(handle, "wifi_pass", out_pass);
-        nvs_commit(handle);
+    esp_err_t pass_err = nvs_get_str(handle, "wifi_pass", out_pass, &required_pass_len);
+    if (pass_err != ESP_OK) {
+        out_pass[0] = '\0';
     }
 
     ESP_LOGI(TAG, "Credenciais Wi-Fi carregadas da NVS. SSID: %s", out_ssid);

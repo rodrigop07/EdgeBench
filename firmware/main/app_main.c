@@ -27,7 +27,7 @@
 static const char *TAG = "APP_MAIN";
 
 void app_main(void) {
-    ESP_LOGI(TAG, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa[APP] Startup..");
+    ESP_LOGI(TAG, "[APP] Startup..");
     ESP_LOGI(TAG, "[APP] Memoria livre: %" PRIu32 " bytes", esp_get_free_heap_size());
     ESP_LOGI(TAG, "[APP] IDF Versao: %s", esp_get_idf_version());
 
@@ -88,17 +88,23 @@ void app_main(void) {
     // inicializa e conecta ao wifi utilizando as credenciais salvas na NVS
     char wifi_ssid[33] = {0};
     char wifi_pass[65] = {0};
-    nvs_manager_get_wifi_credentials(wifi_ssid, sizeof(wifi_ssid), wifi_pass, sizeof(wifi_pass));
+    esp_err_t wifi_err = nvs_manager_get_wifi_credentials(wifi_ssid, sizeof(wifi_ssid), wifi_pass, sizeof(wifi_pass));
 
-    if (wifi_ssid[0] == '\0' || strcmp(wifi_ssid, "pnat") == 0) {
-        ESP_LOGW(TAG, "Credencial Wi-Fi padrão ou vazia ('%s'). Solicitando credenciais via LoRa...", wifi_ssid);
+    if (wifi_err != ESP_OK || wifi_ssid[0] == '\0') {
+        ESP_LOGW(TAG, "Nenhuma credencial Wi-Fi salva na NVS. Solicitando credenciais via LoRa...");
         lora_send_req_config();
         // aguarda até 2 segundos caso a Central responda de imediato
         vTaskDelay(pdMS_TO_TICKS(2000));
         nvs_manager_get_wifi_credentials(wifi_ssid, sizeof(wifi_ssid), wifi_pass, sizeof(wifi_pass));
     }
 
-    wifi_manager_init_sta(wifi_ssid, wifi_pass);
+    if (!wifi_manager_is_initialized()) {
+        if (wifi_ssid[0] != '\0') {
+            wifi_manager_init_sta(wifi_ssid, wifi_pass);
+        } else {
+            ESP_LOGW(TAG, "Credenciais Wi-Fi ainda não disponíveis, aguardando configuração via LoRa...");
+        }
+    }
 
     // configura fuso horário para horário de Brasília e cliente SNTP
     setenv("TZ", "<-03>3", 1);
