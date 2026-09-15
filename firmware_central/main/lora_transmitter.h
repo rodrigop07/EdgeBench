@@ -19,6 +19,7 @@
 #define LORA_MSG_CMD_SET_BENCH 0x30   // Central -> Nó: configura ID direcionado por ID e/ou MAC
 #define LORA_MSG_REQ_BENCH_INFO 0x31  // Central -> Nó: consulta MAC de bancada com ID x
 #define LORA_MSG_RESP_BENCH_INFO 0x32 // Nó -> Central: informa seu ID e MAC
+#define LORA_MSG_ANNOUNCE_PAIRING 0x33 // Nó -> Central: anúncio de presença para pareamento físico
 
 // token de segurança para comandos críticos
 #define LORA_SECURITY_TOKEN 0xABCD1234

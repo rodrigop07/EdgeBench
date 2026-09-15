@@ -162,7 +162,8 @@ esp_err_t nvs_manager_get_wifi_credentials(char *out_ssid, size_t max_ssid_len, 
         if (err == ESP_ERR_NVS_NOT_FOUND) {
             ESP_LOGW(TAG, "SSID não encontrado na NVS. Usando padrão: %s", CONFIG_EXAMPLE_WIFI_SSID);
         } else {
-            ESP_LOGW(TAG, "Erro ao ler 'wifi_ssid' da NVS (%s). Usando padrão: %s", esp_err_to_name(err), CONFIG_EXAMPLE_WIFI_SSID);
+            ESP_LOGW(TAG, "Erro ao ler 'wifi_ssid' da NVS (%s). Usando padrão: %s", esp_err_to_name(err),
+                     CONFIG_EXAMPLE_WIFI_SSID);
         }
         strncpy(out_ssid, CONFIG_EXAMPLE_WIFI_SSID, max_ssid_len - 1);
         out_ssid[max_ssid_len - 1] = '\0';
@@ -301,6 +302,30 @@ esp_err_t nvs_manager_set_bench_id(uint16_t bench_id) {
     }
 
     // fecha o handle da NVS
+    nvs_close(handle);
+    return err;
+}
+
+esp_err_t nvs_manager_factory_reset(void) {
+    ESP_LOGW(TAG, "Iniciando Factory Reset, apagando namespace '%s' da NVS...", NVS_NAMESPACE);
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Erro ao abrir NVS para Factory Reset (%s)", esp_err_to_name(err));
+        return err;
+    }
+
+    // apaga todas as chaves gravadas no namespace "config" (wifi_ssid, wifi_pass, broker_url, bench_id, etc)
+    err = nvs_erase_all(handle);
+    if (err == ESP_OK) {
+        // grava a remoção na memória flash física
+        nvs_commit(handle);
+        ESP_LOGI(TAG, "Factory Reset concluido, todas as configuracoes foram apagadas");
+    } else {
+        ESP_LOGE(TAG, "Falha ao apagar chaves da NVS (%s)", esp_err_to_name(err));
+    }
+
+    // libera o handle da NVS
     nvs_close(handle);
     return err;
 }

@@ -231,6 +231,7 @@ def interactive_menu(port: Optional[str] = None):
             print("  [5] Reconfigurar ID de Bancada via LoRa (identificando pelo ID atual)")
             print("  [6] Consultar MAC de uma Bancada via LoRa")
             print("  [7] Monitorar logs contínuos da Serial")
+            print("  [8] Modo de Pareamento Rápido (Aguardando botão físico da bancada...)")
             print("  [0] Sair")
 
             choice = input("\nOpcao: ").strip()
@@ -288,7 +289,45 @@ def interactive_menu(port: Optional[str] = None):
                                 print(f"[ESP32] {line}")
                         time.sleep(0.05)
                 except KeyboardInterrupt:
-                    print("\n[INFO] Retornando ao menu.")
+                    print("\n[INFO] Retornando ao menu")
+            elif choice == "8":
+                print("\n" + "=" * 60)
+                print(" [MODO PAREAMENTO] Aguardando acionamento do botão físico (3s)...")
+                print(" Vá até a bancada física e segure o botão PRG por 3 segundos")
+                print(" Pressione Ctrl+C a qualquer momento para cancelar e voltar ao menu")
+                print("=" * 60 + "\n")
+                try:
+                    while True:
+                        if gw.ser and gw.ser.in_waiting > 0:
+                            line = gw.ser.readline().decode("utf-8", errors="ignore").strip()
+                            if line.startswith("{") and "pairing" in line:
+                                try:
+                                    pairing_data = json.loads(line)
+                                    mac = pairing_data.get("mac")
+                                    current_id = pairing_data.get("bench_id")
+                                    print("\n" + "*" * 60)
+                                    print(" [NOVA BANCADA DETECTADA VIA BOTÃO]")
+                                    print(f" Endereço MAC : {mac}")
+                                    print(f" ID Atual     : {current_id}")
+                                    print("*" * 60)
+                                    new_id_str = input(
+                                        f"\nDigite o NOVO ID para esta bancada (Enter para manter {current_id}): "
+                                    ).strip()
+                                    if new_id_str.isdigit():
+                                        new_id = int(new_id_str)
+                                        res = gw.set_bench(new_id, target_bench_id=0, target_mac=mac)
+                                        print(f"-> Resposta da Central: {res}")
+                                        print(f"-> Bancada {mac} configurada com sucesso com ID {new_id}!\n")
+                                    else:
+                                        print("Nenhuma alteração realizada")
+                                    print("Continuando no modo pareamento... (Aguardando próxima bancada)")
+                                except Exception as e:
+                                    print(f"Erro ao processar anúncio de pareamento: {e}")
+                            elif line:
+                                print(f"[ESP32] {line}")
+                        time.sleep(0.05)
+                except KeyboardInterrupt:
+                    print("\n[INFO] Modo de pareamento encerrado, retornando ao menu")
             elif choice == "0":
                 print("Encerrando...")
                 break

@@ -55,4 +55,10 @@ esp_err_t nvs_manager_get_bench_id(uint16_t *bench_id);
  */
 esp_err_t nvs_manager_set_bench_id(uint16_t bench_id);
 
+/**
+ * @brief apaga todas as configurações salvas na NVS
+ * @return ESP_OK em caso de sucesso
+ */
+esp_err_t nvs_manager_factory_reset(void);
+
 #endif /* NVS_MANAGER_H */

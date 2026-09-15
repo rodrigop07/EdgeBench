@@ -2,8 +2,10 @@
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "nvs_config.h"
 #include <string.h>
@@ -13,6 +15,19 @@ static const char *TAG = "GATEWAY_LORA";
 
 static spi_device_handle_t s_lora_spi = NULL;
 static TaskHandle_t s_rx_task_handle = NULL;
+// mutex recursivo para proteger o acesso concorrente ao barramento SPI e ao chip SX1262
+static SemaphoreHandle_t s_lora_mutex = NULL;
+
+#define LORA_LOCK()                                                                                                    \
+    do {                                                                                                               \
+        if (s_lora_mutex)                                                                                              \
+            xSemaphoreTakeRecursive(s_lora_mutex, portMAX_DELAY);                                                      \
+    } while (0)
+#define LORA_UNLOCK()                                                                                                  \
+    do {                                                                                                               \
+        if (s_lora_mutex)                                                                                              \
+            xSemaphoreGiveRecursive(s_lora_mutex);                                                                     \
+    } while (0)
 
 // opcodes de comando do transceptor SX1262
 #define SX126X_CMD_SET_STANDBY 0x80
@@ -38,12 +53,12 @@ static TaskHandle_t s_rx_task_handle = NULL;
 #define SX126X_CMD_READ_BUFFER 0x1E
 
 static void sx1262_wait_busy(void) {
-    int timeout_ms = 1000;
-    while (gpio_get_level(LORA_PIN_BUSY) == 1 && timeout_ms > 0) {
-        vTaskDelay(pdMS_TO_TICKS(1));
-        timeout_ms--;
+    int timeout_us = 100000; // 100 ms max
+    while (gpio_get_level(LORA_PIN_BUSY) == 1 && timeout_us > 0) {
+        esp_rom_delay_us(10);
+        timeout_us -= 10;
     }
-    if (timeout_ms <= 0) {
+    if (timeout_us <= 0) {
         ESP_LOGE(TAG, "Timeout aguardando pino BUSY do SX1262");
     }
 }
@@ -192,6 +207,16 @@ static void IRAM_ATTR lora_dio1_isr_handler(void *arg) {
 esp_err_t lora_transmitter_init(void) {
     ESP_LOGI(TAG, "Inicializando transceptor LoRa SX1262 a 915MHz...");
 
+    if (s_lora_mutex == NULL) {
+        s_lora_mutex = xSemaphoreCreateRecursiveMutex();
+        if (s_lora_mutex == NULL) {
+            ESP_LOGE(TAG, "Falha ao criar s_lora_mutex");
+            return ESP_FAIL;
+        }
+    }
+
+    LORA_LOCK();
+
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << LORA_PIN_RST) | (1ULL << LORA_PIN_VEXT),
         .mode = GPIO_MODE_OUTPUT,
@@ -293,6 +318,8 @@ esp_err_t lora_transmitter_init(void) {
 
     sx1262_clear_irq_status(0xFFFF);
 
+    LORA_UNLOCK();
+
     ESP_LOGI(TAG, "SX1262 inicializado com sucesso");
     return ESP_OK;
 }
@@ -301,6 +328,8 @@ esp_err_t lora_send_packet(const uint8_t *payload, size_t length) {
     if (payload == NULL || length == 0 || length > 255) {
         return ESP_ERR_INVALID_ARG;
     }
+
+    LORA_LOCK();
 
     uint8_t standby = 0x00;
     sx1262_write_command(SX126X_CMD_SET_STANDBY, &standby, 1);
@@ -333,19 +362,23 @@ esp_err_t lora_send_packet(const uint8_t *payload, size_t length) {
     if (timeout_ms <= 0) {
         ESP_LOGE(TAG, "Timeout na transmissao do pacote LoRa");
         sx1262_set_rx(0xFFFFFF); // retorna para escuta
+        LORA_UNLOCK();
         return ESP_ERR_TIMEOUT;
     }
 
     // volta imediatamente para modo de escuta contínua (RX)
     sx1262_set_rx(0xFFFFFF);
+    LORA_UNLOCK();
     return ESP_OK;
 }
 
+// envia resposta de horário (0x11) com timestamp Epoch Unix
 esp_err_t lora_send_resp_time(const uint8_t target_mac[6], uint64_t timestamp) {
     if (target_mac == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    // formato do pacote: [0xEB, 0x11, TARGET_MAC(6B), TIMESTAMP(8B)] = 16 bytes
     uint8_t pkt[16];
     pkt[0] = LORA_ESPECIAL_BYTE;
     pkt[1] = LORA_MSG_RESP_TIME;
@@ -358,6 +391,7 @@ esp_err_t lora_send_resp_time(const uint8_t target_mac[6], uint64_t timestamp) {
     return lora_send_packet(pkt, sizeof(pkt));
 }
 
+// envia configurações de rede wifi e URL do broker MQTT para a bancada
 esp_err_t lora_send_resp_config(const uint8_t target_mac[6], const char *ssid, const char *password,
                                 const char *broker_url) {
     if (target_mac == NULL || ssid == NULL || broker_url == NULL) {
@@ -369,7 +403,9 @@ esp_err_t lora_send_resp_config(const uint8_t target_mac[6], const char *ssid, c
     uint8_t pass_len = (uint8_t)strlen(safe_pass);
     uint8_t broker_len = (uint8_t)strlen(broker_url);
 
+    // token de segurança para autorizar o salvamento na NVS do receptor
     uint32_t token = LORA_SECURITY_TOKEN;
+    // tamanho dinâmico: cabeçalho + MAC + token + strings com seus respectivos tamanhos
     size_t pkt_size = 2 + 6 + 4 + 1 + ssid_len + 1 + pass_len + 1 + broker_len;
     uint8_t pkt[pkt_size];
 
@@ -378,6 +414,7 @@ esp_err_t lora_send_resp_config(const uint8_t target_mac[6], const char *ssid, c
     memcpy(&pkt[2], target_mac, 6);
     memcpy(&pkt[8], &token, sizeof(uint32_t));
 
+    // monta o payload serializado para cada parâmetro
     size_t offset = 12;
     pkt[offset++] = ssid_len;
     memcpy(&pkt[offset], ssid, ssid_len);
@@ -399,17 +436,20 @@ esp_err_t lora_send_resp_config(const uint8_t target_mac[6], const char *ssid, c
     return lora_send_packet(pkt, pkt_size);
 }
 
+// envia comando para reconfigurar o ID da bancada direcionado por ID atual e/ou MAC
 esp_err_t lora_send_set_bench(const uint8_t target_mac[6], uint16_t target_bench_id, uint16_t new_bench_id) {
     if (new_bench_id == 0) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    // se MAC não especificado, usa broadcast FF:FF:FF:FF:FF:FF
     uint8_t mac_to_use[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     if (target_mac != NULL) {
         memcpy(mac_to_use, target_mac, 6);
     }
 
     uint32_t token = LORA_SECURITY_TOKEN;
+    // formato: [0xEB, 0x30, MAC(6B), TARGET_ID(2B), TOKEN(4B), NEW_ID(2B)] = 16 bytes
     uint8_t pkt[16];
     pkt[0] = LORA_ESPECIAL_BYTE;
     pkt[1] = LORA_MSG_CMD_SET_BENCH;
@@ -425,7 +465,9 @@ esp_err_t lora_send_set_bench(const uint8_t target_mac[6], uint16_t target_bench
     return lora_send_packet(pkt, sizeof(pkt));
 }
 
+// envia consulta à bancada para que ela responda seu endereço MAC físico
 esp_err_t lora_send_req_bench_info(uint16_t target_bench_id) {
+    // formato: [0xEB, 0x31, TARGET_BENCH_ID(2B)] = 4 bytes
     uint8_t pkt[4];
     pkt[0] = LORA_ESPECIAL_BYTE;
     pkt[1] = LORA_MSG_REQ_BENCH_INFO;
@@ -438,27 +480,33 @@ esp_err_t lora_send_req_bench_info(uint16_t target_bench_id) {
 static void lora_rx_task(void *pvParameters) {
     ESP_LOGI(TAG, "Tarefa de escuta RX iniciada (Core 0)");
 
-    // coloca o rádio em modo de escuta contínua
+    // coloca o rádio SX1262 em modo de escuta contínua (timeout 0xFFFFFF)
     sx1262_clear_irq_status(0xFFFF);
     sx1262_set_rx(0xFFFFFF);
 
     uint8_t rx_buffer[256];
 
     while (1) {
-        // aguarda sinalização do pino DIO1 via notificação da ISR
+        // aguarda notificação liberada pela interrupção (ISR) do pino DIO1 do SX1262
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        // bloqueia o acesso concorrente ao SPI enquanto lê e processa os dados do rádio
+        LORA_LOCK();
 
         uint16_t irq = sx1262_get_irq_status();
         sx1262_clear_irq_status(irq);
 
-        if (irq & 0x0002) { // RxDone
+        // bit 1 = RxDone (pacote recebido no buffer interno do chip)
+        if (irq & 0x0002) {
             uint8_t payload_len = 0;
             uint8_t rx_ptr = 0;
             if (sx1262_get_rx_buffer_status(&payload_len, &rx_ptr) == ESP_OK && payload_len >= 4) {
                 if (sx1262_read_buffer(rx_ptr, rx_buffer, payload_len) == ESP_OK) {
+                    // valida byte mágico do EdgeBench
                     if (rx_buffer[0] == LORA_ESPECIAL_BYTE) {
                         uint8_t msg_type = rx_buffer[1];
 
+                        // bancada solicitando horário atual
                         if (msg_type == LORA_MSG_REQ_TIME && payload_len >= 8) {
                             uint8_t sender_mac[6];
                             memcpy(sender_mac, &rx_buffer[2], 6);
@@ -476,6 +524,7 @@ static void lora_rx_task(void *pvParameters) {
                             } else {
                                 ESP_LOGW(TAG, "Horario nao sincronizado, ignorando REQ_TIME");
                             }
+                            // bancada solicitando credenciais Wi-Fi e Broker MQTT
                         } else if (msg_type == LORA_MSG_REQ_CONFIG && payload_len >= 8) {
                             uint8_t sender_mac[6];
                             memcpy(sender_mac, &rx_buffer[2], 6);
@@ -486,10 +535,12 @@ static void lora_rx_task(void *pvParameters) {
                             char ssid[33] = {0};
                             char pass[65] = {0};
                             char broker[128] = {0};
+                            // lê as credenciais armazenadas na NVS e responde para o MAC solicitante
                             central_nvs_get_wifi(ssid, sizeof(ssid), pass, sizeof(pass));
                             central_nvs_get_broker(broker, sizeof(broker));
 
                             lora_send_resp_config(sender_mac, ssid, pass, broker);
+                            // bancada respondendo consulta de identificação (ID e MAC)
                         } else if (msg_type == LORA_MSG_RESP_BENCH_INFO && payload_len >= 10) {
                             uint16_t b_id = 0;
                             memcpy(&b_id, &rx_buffer[2], sizeof(uint16_t));
@@ -498,17 +549,36 @@ static void lora_rx_task(void *pvParameters) {
                             ESP_LOGI(TAG,
                                      "[RESP_BENCH_INFO] Bancada ID %u respondeu, MAC: %02X:%02X:%02X:%02X:%02X:%02X",
                                      b_id, b_mac[0], b_mac[1], b_mac[2], b_mac[3], b_mac[4], b_mac[5]);
+                            // emite JSON na porta serial para consumo do script Python
                             printf("{\"status\":\"ok\",\"msg\":\"bench_info\",\"bench_id\":%u,\"mac\":\"%02X:%02X:%02X:"
                                    "%02X:%02X:%02X\"}\n",
                                    b_id, b_mac[0], b_mac[1], b_mac[2], b_mac[3], b_mac[4], b_mac[5]);
+                            fflush(stdout);
+                            // bancada anunciando pareamento físico disparado pelo botão
+                        } else if (msg_type == LORA_MSG_ANNOUNCE_PAIRING && payload_len >= 10) {
+                            uint8_t b_mac[6];
+                            memcpy(b_mac, &rx_buffer[2], 6);
+                            uint16_t b_id = 0;
+                            memcpy(&b_id, &rx_buffer[8], sizeof(uint16_t));
+                            ESP_LOGI(TAG,
+                                     "[ANUNCIO_PAREAMENTO] Bancada ID %u solicitou pareamento físico! MAC: "
+                                     "%02X:%02X:%02X:%02X:%02X:%02X",
+                                     b_id, b_mac[0], b_mac[1], b_mac[2], b_mac[3], b_mac[4], b_mac[5]);
+                            // emite evento JSON de pareamento na serial para o menu interativo
+                            printf(
+                                "{\"status\":\"pairing\",\"bench_id\":%u,\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\"}\n",
+                                b_id, b_mac[0], b_mac[1], b_mac[2], b_mac[3], b_mac[4], b_mac[5]);
                             fflush(stdout);
                         }
                     }
                 }
             }
-            // garante retorno ao modo de escuta
+            // garante retorno do rádio para o modo de escuta contínua
             sx1262_set_rx(0xFFFFFF);
         }
+
+        // libera a trava do barramento SPI e rádio
+        LORA_UNLOCK();
     }
 }
 

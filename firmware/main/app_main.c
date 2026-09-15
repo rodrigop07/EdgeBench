@@ -15,6 +15,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 
+#include "button_manager.h"
 #include "lora_receiver.h"
 #include "mqtt_manager.h"
 #include "nvs_manager.h"
@@ -59,6 +60,9 @@ void app_main(void) {
     // inicializa o rádio LoRa (SX1262) e sua tarefa de escuta no Core 0
     ESP_ERROR_CHECK(lora_receiver_init());
     ESP_ERROR_CHECK(lora_receiver_start_task());
+
+    // inicializa o monitoramento do botão no GPIO 0
+    ESP_ERROR_CHECK(button_manager_init());
 
     // inicializa pilhas de rede e loop de eventos padrão do ESP-IDF
     ESP_ERROR_CHECK(esp_netif_init());
