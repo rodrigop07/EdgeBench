@@ -27,7 +27,7 @@
 static const char *TAG = "APP_MAIN";
 
 void app_main(void) {
-    ESP_LOGI(TAG, "[APP] Startup..");
+    ESP_LOGI(TAG, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa[APP] Startup..");
     ESP_LOGI(TAG, "[APP] Memoria livre: %" PRIu32 " bytes", esp_get_free_heap_size());
     ESP_LOGI(TAG, "[APP] IDF Versao: %s", esp_get_idf_version());
 

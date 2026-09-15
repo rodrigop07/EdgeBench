@@ -258,7 +258,7 @@ esp_err_t wifi_manager_reconfigure(const char *ssid, const char *password) {
 
     s_is_reconfiguring = false;
 
-    ESP_LOGI(TAG, "Wi-Fi reiniciado com SSID '%s'. O driver irá reconectar automaticamente.", clean_ssid);
+    ESP_LOGI(TAG, "Wi-Fi reiniciado com SSID '%s', o driver irá reconectar automaticamente", clean_ssid);
     return ESP_OK;
 }
 
