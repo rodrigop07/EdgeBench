@@ -43,4 +43,8 @@ void app_main(void) {
     ESP_ERROR_CHECK(serial_bridge_init());
 
     ESP_LOGI(TAG, "Gateway Central pronto em modo servidor sob demanda (RX padrao, TX em respostas)");
+
+    // solicita sincronizacao inicial de horario ao PC conectado
+    printf("{\"event\":\"req_time\"}\n");
+    fflush(stdout);
 }

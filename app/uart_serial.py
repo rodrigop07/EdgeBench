@@ -11,6 +11,7 @@ import http.server
 import json
 import logging
 import os
+import queue
 import socket
 import socketserver
 import sys
@@ -135,6 +136,7 @@ class EdgeBenchGateway:
         self._rx_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._rx_thread = None
+        self._cmd_resp_queue = queue.Queue()
 
     @staticmethod
     def list_available_ports() -> List[str]:
@@ -185,8 +187,6 @@ class EdgeBenchGateway:
                 timeout=self.timeout,
                 write_timeout=self.timeout,
             )
-            # pausa para estabilização
-            # pausa para estabilização
             time.sleep(1.5)
             self.ser.reset_input_buffer()
             
@@ -195,6 +195,9 @@ class EdgeBenchGateway:
             self._rx_thread.start()
 
             logger.info(f"Conexao estabelecida com sucesso na porta {self.port}")
+            # sincroniza o relógio da Central automaticamente ao conectar
+            logger.info("Sincronizando horario da Central automaticamente...")
+            self.sync_time()
             return True
         except Exception as e:
             logger.error(f"Falha ao abrir porta serial {self.port}: {e}")
@@ -205,22 +208,31 @@ class EdgeBenchGateway:
     def _background_rx_loop(self):
         while not self._stop_event.is_set():
             has_data = False
+            raw_line = ""
             with self._rx_lock:
                 if self.ser and self.ser.is_open and self.ser.in_waiting > 0:
                     has_data = True
                     try:
                         raw_line = self.ser.readline().decode("utf-8", errors="ignore").strip()
-                        if raw_line.startswith("{") and "telemetry" in raw_line:
-                            try:
-                                j = json.loads(raw_line)
-                                if j.get("type") == "telemetry":
-                                    self._publish_telemetry(j)
-                            except Exception as e:
-                                logger.error(f"Erro no parse de telemetria: {e}")
                     except Exception:
-                        pass
+                        raw_line = ""
+
+            if raw_line:
+                logger.debug(f"RX Serial <- {raw_line}")
+                if raw_line.startswith("{") and raw_line.endswith("}"):
+                    try:
+                        j = json.loads(raw_line)
+                        if j.get("type") == "telemetry":
+                            self._publish_telemetry(j)
+                        elif j.get("event") == "req_time":
+                            logger.info("[EVENT] Central solicitou horario (bancada ou boot). Enviando timestamp do PC...")
+                            self.sync_time()
+                        elif "status" in j:
+                            self._cmd_resp_queue.put(j)
+                    except Exception as e:
+                        logger.error(f"Erro no parse de JSON da serial: {e}")
             if not has_data:
-                time.sleep(0.05)
+                time.sleep(0.02)
 
     def _publish_telemetry(self, data):
         if mqtt is None:
@@ -262,12 +274,18 @@ class EdgeBenchGateway:
             logger.error("Porta serial nao esta aberta")
             return None
 
+        # esvazia respostas residuais anteriores da fila
+        while not self._cmd_resp_queue.empty():
+            try:
+                self._cmd_resp_queue.get_nowait()
+            except queue.Empty:
+                break
+
         line_to_send = json.dumps(cmd_dict) + "\n"
         try:
-            if hasattr(self.ser, "reset_input_buffer"):
-                self.ser.reset_input_buffer()
-            self.ser.write(line_to_send.encode("utf-8"))
-            self.ser.flush()
+            with self._rx_lock:
+                self.ser.write(line_to_send.encode("utf-8"))
+                self.ser.flush()
             logger.debug(f"TX Serial -> {line_to_send.strip()}")
         except Exception as e:
             logger.error(f"Erro ao transmitir comando pela serial: {e}")
@@ -276,35 +294,12 @@ class EdgeBenchGateway:
         if not wait_response:
             return None
 
-        # aguarda a resposta JSON do firmware ignorando logs de depuração do IDF
-        start_time = time.time()
-        while (time.time() - start_time) < self.timeout:
-            try:
-                raw_line = ""
-                with self._rx_lock:
-                    if self.ser and self.ser.in_waiting > 0:
-                        raw_line = self.ser.readline().decode("utf-8", errors="ignore").strip()
-                if not raw_line:
-                    time.sleep(0.05)
-                    continue
-                if not raw_line:
-                    continue
-
-                logger.debug(f"RX Serial <- {raw_line}")
-
-                # verifica se a linha recebida é um JSON válido
-                if raw_line.startswith("{") and raw_line.endswith("}"):
-                    try:
-                        resp_json = json.loads(raw_line)
-                        return resp_json
-                    except json.JSONDecodeError:
-                        continue
-            except Exception as e:
-                logger.warning(f"Erro ao ler linha da serial: {e}")
-                break
-
-        logger.warning(f"Timeout aguardando resposta JSON para o comando '{cmd_dict.get('cmd')}'")
-        return None
+        try:
+            resp = self._cmd_resp_queue.get(timeout=self.timeout)
+            return resp
+        except queue.Empty:
+            logger.warning(f"Timeout aguardando resposta JSON para o comando '{cmd_dict.get('cmd')}'")
+            return None
 
     # comandos específicos do EdgeBench
 

@@ -1,6 +1,5 @@
 #include "sensor_manager.h"
 #include "esp_log.h"
-#include "esp_rom_sys.h"
 #include "esp_timer.h"
 #include "freertos/task.h"
 
@@ -23,9 +22,6 @@ static void IRAM_ATTR sensor_gpio_isr_handler(void *arg) {
         s_last_sensor_interrupt_time = now;
         uint32_t gpio_num = (uint32_t)arg;
         BaseType_t high_task_wakeup = pdFALSE;
-
-        // impressão segura em nível de ROM direto do contexto da ISR
-        esp_rom_printf("\n[ISR] Interrupcao detectada no GPIO %lu (Sensor E18-D80NK)!\n", (unsigned long)gpio_num);
 
         xQueueSendFromISR(s_sensor_evt_queue, &gpio_num, &high_task_wakeup);
         if (high_task_wakeup == pdTRUE) {

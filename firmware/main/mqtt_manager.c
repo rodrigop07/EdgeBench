@@ -247,6 +247,15 @@ esp_err_t mqtt_manager_publish_detection(const sensor_data_record_t *record, boo
     struct tm timeinfo;
     char time_str[64];
     time_t ts = record->timestamp;
+    if (ts < 1704067200ULL) {
+        time_t now = time(NULL);
+        if (now >= 1704067200ULL) {
+            int64_t current_uptime = esp_timer_get_time() / 1000000ULL;
+            int64_t elapsed = current_uptime - (int64_t)ts;
+            if (elapsed < 0) elapsed = 0;
+            ts = now - (time_t)elapsed;
+        }
+    }
     localtime_r(&ts, &timeinfo);
 
     if (timeinfo.tm_year >= (2024 - 1900)) {
@@ -261,7 +270,7 @@ esp_err_t mqtt_manager_publish_detection(const sensor_data_record_t *record, boo
     snprintf(payload, sizeof(payload),
              "{\"bancada\": %u, \"contagem\": %lu, \"horario\": \"%s\", "
              "\"timestamp\": %lld, \"quantidade\": 1, \"modo_offline\": %s}",
-             s_bench_id, (unsigned long)record->count, time_str, (long long)record->timestamp,
+             s_bench_id, (unsigned long)record->count, time_str, (long long)ts,
              offline ? "true" : "false");
 
     esp_mqtt5_client_set_publish_property(s_mqtt_client, &publish_property);
@@ -344,6 +353,15 @@ esp_err_t mqtt_manager_publish_detection_sync(const sensor_data_record_t *record
     struct tm timeinfo;
     char time_str[64];
     time_t ts = record->timestamp;
+    if (ts < 1704067200ULL) {
+        time_t now = time(NULL);
+        if (now >= 1704067200ULL) {
+            int64_t current_uptime = esp_timer_get_time() / 1000000ULL;
+            int64_t elapsed = current_uptime - (int64_t)ts;
+            if (elapsed < 0) elapsed = 0;
+            ts = now - (time_t)elapsed;
+        }
+    }
     localtime_r(&ts, &timeinfo);
 
     if (timeinfo.tm_year >= (2024 - 1900)) {
@@ -357,7 +375,7 @@ esp_err_t mqtt_manager_publish_detection_sync(const sensor_data_record_t *record
     snprintf(payload, sizeof(payload),
              "{\"bancada\": %u, \"contagem\": %lu, \"horario\": \"%s\", "
              "\"timestamp\": %lld, \"quantidade\": 1, \"modo_offline\": %s}",
-             s_bench_id, (unsigned long)record->count, time_str, (long long)record->timestamp,
+             s_bench_id, (unsigned long)record->count, time_str, (long long)ts,
              offline ? "true" : "false");
 
     esp_mqtt5_client_set_publish_property(s_mqtt_client, &publish_property);

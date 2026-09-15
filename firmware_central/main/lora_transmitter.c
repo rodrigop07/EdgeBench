@@ -279,12 +279,12 @@ esp_err_t lora_transmitter_init(void) {
     uint8_t standby_data = 0x00; // STDBY_RC
     sx1262_write_command(SX126X_CMD_SET_STANDBY, &standby_data, 1);
 
-    // DIO2 como RF Switch
-    uint8_t dio2_data = 0x01;
-    sx1262_write_command(SX126X_CMD_SET_DIO2_AS_RF_SWITCH, &dio2_data, 1);
+    // modo regulador DC-DC (deve ser antes de calibrar e antes do TCXO)
+    uint8_t reg_mode = 0x01;
+    sx1262_write_command(SX126X_CMD_SET_REGULATOR_MODE, &reg_mode, 1);
 
-    // DIO3 como controle de TCXO (1.8V, timeout 320)
-    uint8_t dio3_data[4] = {0x02, 0x00, 0x01, 0x40};
+    // DIO3 como controle de TCXO (1.8V, timeout 10ms = 0x000280 - padrao Heltec V3)
+    uint8_t dio3_data[4] = {0x02, 0x00, 0x02, 0x80};
     sx1262_write_command(SX126X_CMD_SET_DIO3_AS_TCXO_CTRL, dio3_data, 4);
 
     // calibração
@@ -295,9 +295,9 @@ esp_err_t lora_transmitter_init(void) {
     uint8_t calib_img[2] = {0xE1, 0xE9};
     sx1262_write_command(SX126X_CMD_CALIBRATE_IMAGE, calib_img, 2);
 
-    // modo regulador DC-DC
-    uint8_t reg_mode = 0x01;
-    sx1262_write_command(SX126X_CMD_SET_REGULATOR_MODE, &reg_mode, 1);
+    // DIO2 como RF Switch
+    uint8_t dio2_data = 0x01;
+    sx1262_write_command(SX126X_CMD_SET_DIO2_AS_RF_SWITCH, &dio2_data, 1);
 
     // tipo de pacote LoRa
     uint8_t pkt_type = 0x01;
@@ -327,15 +327,18 @@ esp_err_t lora_transmitter_init(void) {
     uint8_t pkt_params[6] = {0x00, 0x08, 0x00, 0xFF, 0x01, 0x00};
     sx1262_write_command(SX126X_CMD_SET_PACKET_PARAMS, pkt_params, 6);
 
-    // DIO1 IRQ para RxDone (bit 1) e TxDone (bit 0)
-    uint8_t dio_irq[8] = {0x00, 0x03, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00};
+    // DIO1 IRQ para TxDone e RxDone com máscara completa 0x03FF
+    uint8_t dio_irq[8] = {0x03, 0xFF, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00};
     sx1262_write_command(SX126X_CMD_SET_DIO_IRQ_PARAMS, dio_irq, 8);
 
     sx1262_clear_irq_status(0xFFFF);
 
+    // coloca em escuta contínua imediatamente
+    sx1262_set_rx(0xFFFFFF);
+
     LORA_UNLOCK();
 
-    ESP_LOGI(TAG, "SX1262 inicializado com sucesso");
+    ESP_LOGI(TAG, "SX1262 inicializado com sucesso e em modo de escuta continua!");
     return ESP_OK;
 }
 
@@ -374,6 +377,10 @@ esp_err_t lora_send_packet(const uint8_t *payload, size_t length) {
         }
         vTaskDelay(1); // 1 tick mínimo para yield (10ms se tick=100Hz)
     }
+
+    // restaura parâmetros do pacote para recepção com tamanho máximo (0xFF)
+    uint8_t rx_pkt_params[6] = {0x00, 0x08, 0x00, 0xFF, 0x01, 0x00};
+    sx1262_write_command(SX126X_CMD_SET_PACKET_PARAMS, rx_pkt_params, 6);
 
     if (!tx_done) {
         ESP_LOGE(TAG, "Timeout na transmissao do pacote LoRa");
@@ -536,7 +543,6 @@ static void lora_rx_task(void *pvParameters) {
         LORA_LOCK();
 
         uint16_t irq = sx1262_get_irq_status();
-        sx1262_clear_irq_status(irq);
 
         // bit 1 = RxDone (pacote recebido no buffer interno do chip)
         if (irq & 0x0002) {
@@ -544,6 +550,9 @@ static void lora_rx_task(void *pvParameters) {
             uint8_t rx_ptr = 0;
             if (sx1262_get_rx_buffer_status(&payload_len, &rx_ptr) == ESP_OK && payload_len >= 4) {
                 if (sx1262_read_buffer(rx_ptr, rx_buffer, payload_len) == ESP_OK) {
+                    ESP_LOGI(TAG, "Pacote LoRa RF recebido na Central! Tam: %u bytes, Byte0: 0x%02X, Tipo: 0x%02X",
+                             payload_len, rx_buffer[0], rx_buffer[1]);
+
                     // valida byte mágico do EdgeBench
                     if (rx_buffer[0] == LORA_ESPECIAL_BYTE) {
                         uint8_t msg_type = rx_buffer[1];
@@ -569,7 +578,9 @@ static void lora_rx_task(void *pvParameters) {
                                 uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
                                 lora_send_resp_time(broadcast_mac, (uint64_t)now);
                             } else {
-                                ESP_LOGW(TAG, "Horario nao sincronizado, ignorando REQ_TIME");
+                                ESP_LOGW(TAG, "Horario Central nao sincronizado, solicitando ao PC via serial...");
+                                printf("{\"event\":\"req_time\",\"bench_id\":%u}\n", sender_id);
+                                fflush(stdout);
                             }
                             // bancada solicitando credenciais Wi-Fi e Broker MQTT
                         } else if (msg_type == LORA_MSG_REQ_CONFIG && payload_len >= 8) {
@@ -635,16 +646,28 @@ static void lora_rx_task(void *pvParameters) {
                             uint64_t timestamp = 0;
                             memcpy(&timestamp, &rx_buffer[14], sizeof(uint64_t));
 
-                            ESP_LOGI(TAG, "[TELEMETRIA] Híbrida recebida da Bancada %u (Count: %lu)", b_id, (unsigned long)count);
+                            ESP_LOGI(TAG, "[TELEMETRIA] Híbrida recebida da Bancada %u (Count: %lu, Time: %llu)",
+                                     b_id, (unsigned long)count, (unsigned long long)timestamp);
                             // emite evento JSON de telemetria na serial para o script python publicar no MQTT
                             printf("{\"type\":\"telemetry\",\"bench_id\":%u,\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\",\"count\":%lu,\"timestamp\":%llu}\n",
                                    b_id, b_mac[0], b_mac[1], b_mac[2], b_mac[3], b_mac[4], b_mac[5], (unsigned long)count, (unsigned long long)timestamp);
                             fflush(stdout);
+                        } else {
+                            ESP_LOGW(TAG, "Pacote LoRa ignorado: msg_type=0x%02X, len=%u", msg_type, payload_len);
                         }
+                    } else {
+                        ESP_LOGW(TAG, "Pacote LoRa com byte especial invalido: 0x%02X (esperado 0xEB)", rx_buffer[0]);
                     }
                 }
             }
-            // garante retorno do rádio para o modo de escuta contínua
+            sx1262_clear_irq_status(0x03FF);
+            sx1262_set_rx(0xFFFFFF);
+        } else if (irq & 0x0040) { // CrcErr
+            ESP_LOGW(TAG, "Pacote LoRa descartado na Central: Erro de CRC de RF");
+            sx1262_clear_irq_status(0x03FF);
+            sx1262_set_rx(0xFFFFFF);
+        } else if (irq != 0) {
+            sx1262_clear_irq_status(irq);
             sx1262_set_rx(0xFFFFFF);
         }
 

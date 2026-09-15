@@ -726,6 +726,10 @@ esp_err_t lora_send_packet(const uint8_t *payload, size_t length) {
         vTaskDelay(1); // 1 tick mínimo para yield (10ms se tick=100Hz)
     }
 
+    // restaura parâmetros do pacote para recepção com tamanho máximo (0xFF)
+    uint8_t rx_pkt_params[6] = {0x00, 0x08, 0x00, 0xFF, 0x01, 0x00};
+    sx1262_write_command(SX126X_CMD_SET_PACKET_PARAMS, rx_pkt_params, 6);
+
     if (!tx_done) {
         ESP_LOGE(TAG, "Timeout na transmissao do pacote LoRa");
         sx1262_set_rx(0xFFFFFF); // retorna para escuta contínua

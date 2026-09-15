@@ -91,7 +91,7 @@ void app_main(void) {
     esp_err_t wifi_err = nvs_manager_get_wifi_credentials(wifi_ssid, sizeof(wifi_ssid), wifi_pass, sizeof(wifi_pass));
 
     if (wifi_err != ESP_OK || wifi_ssid[0] == '\0') {
-        ESP_LOGW(TAG, "Nenhuma credencial Wi-Fi salva na NVS. Solicitando credenciais via LoRa...");
+        ESP_LOGW(TAG, "Nenhuma credencial Wi-Fi salva na NVS, solicitando credenciais via LoRa...");
         lora_send_req_config();
         // aguarda até 2 segundos caso a Central responda de imediato
         vTaskDelay(pdMS_TO_TICKS(2000));

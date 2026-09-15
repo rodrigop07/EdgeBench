@@ -62,6 +62,26 @@ static esp_err_t append_to_offline_log(const sensor_data_record_t *record) {
 }
 
 /**
+ * @brief Converte timestamps relativos ao boot (uptime) para data/hora real absoluta
+ * caso o relógio do sistema tenha sido sincronizado via SNTP ou LoRa.
+ */
+static time_t resolve_record_timestamp(time_t raw_timestamp) {
+    if (raw_timestamp >= 1704067200ULL) {
+        return raw_timestamp;
+    }
+    time_t now = time(NULL);
+    if (now >= 1704067200ULL) {
+        int64_t current_uptime = esp_timer_get_time() / 1000000ULL;
+        int64_t elapsed = current_uptime - (int64_t)raw_timestamp;
+        if (elapsed < 0) {
+            elapsed = 0;
+        }
+        return now - (time_t)elapsed;
+    }
+    return raw_timestamp;
+}
+
+/**
  * @brief tarefa FreeRTOS vinculada ao Core 0 dedicada a persistência e despacho
  * Implementa política two way ACK e garantia de contagem
  */
@@ -73,8 +93,20 @@ static void core0_storage_task(void *pvParameters) {
     int64_t mqtt_disconnect_time = 0;
     bool was_connected = true;
     bool lora_backlog_sent = false;
+    static int64_t s_last_time_req_us = 0;
 
     while (1) {
+        // se o relógio ainda não sincronizou (ano < 2024), solicita à Central via LoRa a cada 10s
+        time_t cur_t = time(NULL);
+        if (cur_t < 1704067200ULL) {
+            int64_t now_us = esp_timer_get_time();
+            if ((now_us - s_last_time_req_us) > 10000000ULL) {
+                s_last_time_req_us = now_us;
+                ESP_LOGI(TAG, "Horario ainda nao sincronizado. Solicitando via LoRa...");
+                lora_send_req_time();
+            }
+        }
+
         bool is_connected = mqtt_manager_is_connected();
         if (is_connected && !was_connected) {
             was_connected = true;
@@ -95,6 +127,7 @@ static void core0_storage_task(void *pvParameters) {
                     sensor_data_record_t rec;
                     while (fread(&rec, sizeof(sensor_data_record_t), 1, f) == 1) {
                         if (mqtt_manager_is_connected()) break; // interrompe se reconectar
+                        rec.timestamp = resolve_record_timestamp(rec.timestamp);
                         uint32_t random_delay = 150 + (esp_random() % 150); // 150 a 299ms
                         vTaskDelay(pdMS_TO_TICKS(random_delay)); // espaçamento c/ jitter aleatório p/ mitigar colisão RF
                         lora_send_telemetry(rec.count, rec.timestamp);
@@ -107,6 +140,7 @@ static void core0_storage_task(void *pvParameters) {
 
         // processa eventos da fila com timeout de 100ms para manter o laço responsivo
         if (xQueueReceive(s_storage_queue, &record, pdMS_TO_TICKS(100))) {
+            record.timestamp = resolve_record_timestamp(record.timestamp);
             if (is_connected) {
                 // online: envia diretamente via MQTT
                 mqtt_manager_publish_detection(&record, false);
@@ -154,9 +188,11 @@ static void core0_storage_task(void *pvParameters) {
                              total_records);
 
                     while (fread(&off_rec, sizeof(sensor_data_record_t), 1, f_sync) == 1) {
+                        off_rec.timestamp = resolve_record_timestamp(off_rec.timestamp);
                         // Prioriza detecção em tempo real para não engarrafar a fila (RN-04)
                         sensor_data_record_t live_rec;
                         while (xQueueReceive(s_storage_queue, &live_rec, 0)) {
+                            live_rec.timestamp = resolve_record_timestamp(live_rec.timestamp);
                             if (mqtt_manager_is_connected()) {
                                 mqtt_manager_publish_detection(&live_rec, false);
                             } else {
