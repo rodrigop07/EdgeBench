@@ -150,14 +150,14 @@ esp_err_t wifi_manager_init_sta(const char *ssid, const char *password) {
     trim_str(clean_ssid);
 
     if (s_is_initialized) {
-        // Se já está inicializado com o mesmo SSID, nada a fazer
+        // se já está inicializado com o mesmo SSID, nada a fazer
         if (strncmp(s_current_ssid, clean_ssid, sizeof(s_current_ssid)) == 0) {
             ESP_LOGI(TAG, "Wi-Fi já inicializado para o SSID '%s'. Chamada redundante ignorada.", clean_ssid);
             xSemaphoreGive(s_wifi_mutex);
             return ESP_OK;
         }
 
-        // Se o SSID for diferente, redireciona para reconfiguração segura
+        // se o SSID for diferente, redireciona para reconfiguração segura
         ESP_LOGI(TAG, "Wi-Fi já ativo, atualizando credenciais para novo SSID: '%s'...", clean_ssid);
         xSemaphoreGive(s_wifi_mutex);
         return wifi_manager_reconfigure(ssid, password);

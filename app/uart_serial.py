@@ -236,17 +236,67 @@ class EdgeBenchGateway:
 
     def _publish_telemetry(self, data):
         if mqtt is None:
+            logger.warning("[MQTT] Biblioteca paho-mqtt nao disponível, impossível publicar telemetria")
             return
+
+        bench_id = data.get("bench_id", 1)
+        count = data.get("count", 0)
+        ts = data.get("timestamp", int(time.time()))
+
+        # Formata data legível compatível com o padrão do EdgeBench
+        from datetime import datetime
         try:
-            client = mqtt.Client()
-            client.connect(DEFAULT_MQTT_HOST, DEFAULT_MQTT_PORT, 5)
-            topic = f"fabrica/bancada_{data.get('bench_id')}/deteccoes"
-            payload = json.dumps({"count": data.get("count"), "timestamp": data.get("timestamp")})
-            client.publish(topic, payload, qos=1)
-            client.disconnect()
-            logger.info(f"[MQTT] Telemetria LoRa -> {topic}: {payload}")
+            time_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Tópico padrão de produção do EdgeBench (escutado pelo backend e dashboard)
+        topic = f"fabrica/bancada_{bench_id}/producao"
+
+        payload_dict = {
+            "bancada": bench_id,
+            "contagem": count,
+            "horario": time_str,
+            "timestamp": ts,
+            "quantidade": 1,
+            "modo_offline": True,
+            "fonte": "central_lora"
+        }
+        payload = json.dumps(payload_dict)
+
+        host = getattr(self, "broker_host", DEFAULT_MQTT_HOST)
+        port = getattr(self, "broker_port", DEFAULT_MQTT_PORT)
+
+        try:
+            import paho.mqtt.publish as publish
+            try:
+                publish.single(
+                    topic,
+                    payload=payload,
+                    qos=1,
+                    hostname=host,
+                    port=port,
+                    client_id=f"edgebench_bridge_{bench_id}",
+                )
+                logger.info(f"[MQTT] Telemetria LoRa da Bancada {bench_id} publicada com sucesso em '{topic}' ({host}:{port}): {payload}")
+            except Exception as conn_err:
+                local_ip = LocalOTAServer.get_local_ip()
+                if host in ("localhost", "127.0.0.1") and local_ip not in ("localhost", "127.0.0.1"):
+                    logger.warning(f"[MQTT] Falha conectando em {host}, tentando IP local {local_ip}:{port}...")
+                    publish.single(
+                        topic,
+                        payload=payload,
+                        qos=1,
+                        hostname=local_ip,
+                        port=port,
+                        client_id=f"edgebench_bridge_{bench_id}",
+                    )
+                    self.broker_host = local_ip
+                    logger.info(f"[MQTT] Telemetria LoRa da Bancada {bench_id} publicada com sucesso em '{topic}' ({local_ip}:{port}): {payload}")
+                else:
+                    raise conn_err
         except Exception as e:
-            logger.error(f"Falha ao repassar telemetria LoRa para MQTT: {e}")
+            logger.error(f"Falha ao repassar telemetria LoRa para MQTT ({host}:{port}): {e}")
 
     def disconnect(self):
         self._stop_event.set()
