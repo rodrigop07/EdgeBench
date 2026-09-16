@@ -35,6 +35,7 @@ COPY --from=builder /install /usr/local
 
 # Copia o código-fonte da aplicação
 COPY *.py .env.example ./
+COPY api/ ./api/
 
 # Cria diretório de relatórios com permissão de escrita
 RUN mkdir -p /app/reports && chmod 755 /app/reports

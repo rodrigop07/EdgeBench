@@ -78,6 +78,46 @@ services:
     #   docker compose run --rm backend python main.py --export --bancada BC-01
     command: [ "python", "main.py" ]
 
+  # ── API REST (FastAPI) ───────────────────────────────────────────────────────
+  api:
+    image: edgebench_backend:latest
+    container_name: edgebench_api
+    restart: on-failure:10
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-edgebench}
+      POSTGRES_USER: ${POSTGRES_USER:-edgebench_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-edgebench_pass}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-google-credentials.json}
+      GOOGLE_DRIVE_FOLDER_ID: ${GOOGLE_DRIVE_FOLDER_ID:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./reports:/app/reports
+      - ./token.json:/app/token.json
+    networks:
+      - edgebench_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    command: [ "python", "api/main.py" ]
+
+  # ── Interface Web (React) ────────────────────────────────────────────────────
+  web:
+    image: node:20-alpine
+    container_name: edgebench_web
+    working_dir: /app
+    volumes:
+      - ./web:/app
+    ports:
+      - "5173:5173"
+    networks:
+      - edgebench_net
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+
 volumes:
   mosquitto_data:
   mosquitto_log:
