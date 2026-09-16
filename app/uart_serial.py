@@ -406,6 +406,22 @@ class EdgeBenchGateway:
         logger.info(f"Disparando comando LoRa de OTA (Alvo ID: {target_bench_id or 'Todas'}) para URL: {url}")
         return self.send_command({"cmd": "trigger_ota", "url": url, "target_id": target_bench_id})
 
+    def set_debounce(
+        self, debounce_ms: int, target_bench_id: int = 0, target_mac: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        # emite comando via rádio LoRa para reconfigurar o tempo de debounce do sensor (10 a 5000 ms)
+        payload = {"cmd": "set_debounce", "debounce_ms": int(debounce_ms), "target_id": target_bench_id}
+        if target_mac:
+            payload["mac"] = target_mac
+            logger.info(
+                f"Disparando comando LoRa direcionado (Alvo ID: {target_bench_id}, MAC: {target_mac}) para novo Debounce: {debounce_ms} ms"
+            )
+        else:
+            logger.info(
+                f"Disparando comando LoRa (Alvo ID: {target_bench_id or 'Todas'}) para novo Debounce: {debounce_ms} ms"
+            )
+        return self.send_command(payload)
+
     def publish_ota_mqtt(
         self,
         url: str,
@@ -548,6 +564,7 @@ def interactive_menu(port: Optional[str] = None):
             print("  [7] Monitorar logs contínuos da Serial")
             print("  [8] Modo de Pareamento Rápido (Aguardando botão físico da bancada...)")
             print("  [9] Gerenciar Atualização OTA de Firmware (Servidor Local / LoRa / MQTT)")
+            print("  [10] Reconfigurar Tempo de Debounce do Sensor via LoRa")
             print("  [0] Sair")
 
             choice = input("\nOpcao: ").strip()
@@ -659,6 +676,22 @@ def interactive_menu(port: Optional[str] = None):
                     print("\n[INFO] Modo de pareamento encerrado, retornando ao menu")
             elif choice == "9":
                 ota_management_menu(gw, ota_server)
+            elif choice == "10":
+                deb_str = input("Digite o novo tempo de debounce em milissegundos (10 a 5000 ms) [300]: ").strip() or "300"
+                if deb_str.isdigit():
+                    debounce_val = int(deb_str)
+                    if debounce_val < 10 or debounce_val > 5000:
+                        print("[ERRO] O tempo de debounce deve estar entre 10 e 5000 ms.")
+                    else:
+                        target_str = input(
+                            "Digite o ID da bancada alvo (1 a 65535, ou 0 para TODAS) [0]: "
+                        ).strip()
+                        tid = int(target_str) if target_str.isdigit() else 0
+                        mac_str = input("Digite o MAC do ESP32 alvo (opcional, Enter para pular): ").strip()
+                        res = gw.set_debounce(debounce_val, target_bench_id=tid, target_mac=mac_str if mac_str else None)
+                        print(f"-> Resposta: {res}")
+                else:
+                    print("[ERRO] Valor numérico inválido")
             elif choice == "0":
                 print("Encerrando...")
                 break

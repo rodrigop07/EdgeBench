@@ -190,6 +190,39 @@ static void process_json_command(const char *line) {
         } else {
             send_json_status("error", "missing_url");
         }
+    } else if (strcmp(cmd, "set_debounce") == 0) {
+        cJSON *debounce_item = cJSON_GetObjectItem(root, "debounce_ms");
+        if (!debounce_item) {
+            debounce_item = cJSON_GetObjectItem(root, "debounce");
+        }
+        cJSON *target_id_item = cJSON_GetObjectItem(root, "target_id");
+        cJSON *mac_item = cJSON_GetObjectItem(root, "mac");
+
+        if (cJSON_IsNumber(debounce_item)) {
+            uint32_t debounce_ms = (uint32_t)debounce_item->valueint;
+            if (debounce_ms < 10 || debounce_ms > 5000) {
+                send_json_status("error", "invalid_debounce_range");
+            } else {
+                uint16_t target_bench_id =
+                    (target_id_item && cJSON_IsNumber(target_id_item)) ? (uint16_t)target_id_item->valueint : 0;
+                uint8_t target_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // default: broadcast
+
+                if (cJSON_IsString(mac_item) && mac_item->valuestring != NULL && strlen(mac_item->valuestring) >= 17) {
+                    if (!parse_mac_string(mac_item->valuestring, target_mac)) {
+                        ESP_LOGW(TAG, "Formato de MAC invalido: %s, usando broadcast", mac_item->valuestring);
+                    }
+                }
+
+                esp_err_t err = lora_send_cmd_set_debounce(target_mac, target_bench_id, debounce_ms);
+                if (err == ESP_OK) {
+                    send_json_status("ok", "set_debounce_transmitted");
+                } else {
+                    send_json_status("error", "lora_tx_failed");
+                }
+            }
+        } else {
+            send_json_status("error", "missing_debounce_ms");
+        }
     } else if (strcmp(cmd, "ping") == 0) {
         send_json_status("pong", "gateway_online");
     } else {

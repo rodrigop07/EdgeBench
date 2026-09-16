@@ -33,4 +33,17 @@ esp_err_t sensor_manager_init(QueueHandle_t storage_queue);
  */
 uint32_t sensor_manager_get_count(void);
 
+/**
+ * @brief define dinamicamente o tempo de debounce do sensor em milissegundos
+ * @param debounce_ms tempo em milissegundos (10 a 5000)
+ * @return ESP_OK em caso de sucesso
+ */
+esp_err_t sensor_manager_set_debounce_ms(uint32_t debounce_ms);
+
+/**
+ * @brief obtém o tempo de debounce atual do sensor em milissegundos
+ * @return tempo em milissegundos
+ */
+uint32_t sensor_manager_get_debounce_ms(void);
+
 #endif /* SENSOR_MANAGER_H */

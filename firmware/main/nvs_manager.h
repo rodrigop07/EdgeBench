@@ -56,6 +56,20 @@ esp_err_t nvs_manager_get_bench_id(uint16_t *bench_id);
 esp_err_t nvs_manager_set_bench_id(uint16_t bench_id);
 
 /**
+ * @brief recupera o tempo de debounce do sensor em milissegundos da NVS
+ * @param out_debounce_ms ponteiro para armazenar o valor
+ * @return ESP_OK em caso de sucesso
+ */
+esp_err_t nvs_manager_get_debounce_ms(uint32_t *out_debounce_ms);
+
+/**
+ * @brief salva o tempo de debounce do sensor em milissegundos na NVS
+ * @param debounce_ms tempo em milissegundos (entre 10 e 5000)
+ * @return ESP_OK em caso de sucesso
+ */
+esp_err_t nvs_manager_set_debounce_ms(uint32_t debounce_ms);
+
+/**
  * @brief apaga todas as configurações salvas na NVS
  * @return ESP_OK em caso de sucesso
  */

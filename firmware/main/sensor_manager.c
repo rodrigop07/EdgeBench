@@ -2,12 +2,14 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/task.h"
+#include "nvs_manager.h"
 
 static const char *TAG = "SENSOR_MGR";
 
 static QueueHandle_t s_sensor_evt_queue = NULL;
 static QueueHandle_t s_storage_queue = NULL;
 static volatile int64_t s_last_sensor_interrupt_time = 0;
+static volatile uint64_t s_sensor_debounce_us = SENSOR_DEBOUNCE_US;
 static uint32_t s_total_detection_count = 0;
 
 /**
@@ -18,7 +20,7 @@ static uint32_t s_total_detection_count = 0;
  */
 static void IRAM_ATTR sensor_gpio_isr_handler(void *arg) {
     int64_t now = esp_timer_get_time();
-    if ((now - s_last_sensor_interrupt_time) > SENSOR_DEBOUNCE_US) {
+    if ((now - s_last_sensor_interrupt_time) > (int64_t)s_sensor_debounce_us) {
         s_last_sensor_interrupt_time = now;
         uint32_t gpio_num = (uint32_t)arg;
         BaseType_t high_task_wakeup = pdFALSE;
@@ -62,6 +64,17 @@ static void core1_sensor_task(void *pvParameters) {
 esp_err_t sensor_manager_init(QueueHandle_t storage_queue) {
     s_storage_queue = storage_queue;
 
+    // carrega tempo de debounce salvo na NVS ou mantém padrão
+    uint32_t saved_debounce_ms = 0;
+    if (nvs_manager_get_debounce_ms(&saved_debounce_ms) == ESP_OK && saved_debounce_ms >= 10 && saved_debounce_ms <= 5000) {
+        s_sensor_debounce_us = (uint64_t)saved_debounce_ms * 1000ULL;
+        ESP_LOGI(TAG, "Tempo de debounce do sensor carregado da NVS: %lu ms (%llu us)",
+                 (unsigned long)saved_debounce_ms, (unsigned long long)s_sensor_debounce_us);
+    } else {
+        s_sensor_debounce_us = SENSOR_DEBOUNCE_US;
+        ESP_LOGI(TAG, "Tempo de debounce do sensor padrão: %llu us (300 ms)", (unsigned long long)s_sensor_debounce_us);
+    }
+
     // cria a fila intermediária entre a ISR e a tarefa do Core 1
     s_sensor_evt_queue = xQueueCreate(10, sizeof(uint32_t));
     if (s_sensor_evt_queue == NULL) {
@@ -99,4 +112,19 @@ esp_err_t sensor_manager_init(QueueHandle_t storage_queue) {
 
 uint32_t sensor_manager_get_count(void) {
     return s_total_detection_count;
+}
+
+esp_err_t sensor_manager_set_debounce_ms(uint32_t debounce_ms) {
+    if (debounce_ms < 10 || debounce_ms > 5000) {
+        ESP_LOGE(TAG, "Tempo de debounce invalido: %lu ms (deve estar entre 10 e 5000 ms)", (unsigned long)debounce_ms);
+        return ESP_ERR_INVALID_ARG;
+    }
+    s_sensor_debounce_us = (uint64_t)debounce_ms * 1000ULL;
+    ESP_LOGI(TAG, "Novo tempo de debounce configurado dinamicamente: %lu ms (%llu us)",
+             (unsigned long)debounce_ms, (unsigned long long)s_sensor_debounce_us);
+    return ESP_OK;
+}
+
+uint32_t sensor_manager_get_debounce_ms(void) {
+    return (uint32_t)(s_sensor_debounce_us / 1000ULL);
 }

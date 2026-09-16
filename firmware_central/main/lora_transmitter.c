@@ -526,6 +526,35 @@ esp_err_t lora_send_cmd_ota(uint16_t target_bench_id, const char *url) {
     return lora_send_packet(pkt, pkt_size);
 }
 
+// envia comando para reconfigurar o tempo de debounce do sensor via LoRa
+esp_err_t lora_send_cmd_set_debounce(const uint8_t target_mac[6], uint16_t target_bench_id, uint32_t debounce_ms) {
+    if (debounce_ms < 10 || debounce_ms > 5000) {
+        ESP_LOGE(TAG, "Tempo de debounce fora do intervalo aceitavel: %lu ms (esperado 10..5000)", (unsigned long)debounce_ms);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint8_t mac_to_use[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    if (target_mac != NULL) {
+        memcpy(mac_to_use, target_mac, 6);
+    }
+
+    uint32_t token = LORA_SECURITY_TOKEN;
+    // formato: [0xEB, 0x60, MAC(6B), TARGET_ID(2B), TOKEN(4B), DEBOUNCE_MS(4B)] = 18 bytes
+    uint8_t pkt[18];
+    pkt[0] = LORA_ESPECIAL_BYTE;
+    pkt[1] = LORA_MSG_CMD_SET_DEBOUNCE;
+    memcpy(&pkt[2], mac_to_use, 6);
+    memcpy(&pkt[8], &target_bench_id, sizeof(uint16_t));
+    memcpy(&pkt[10], &token, sizeof(uint32_t));
+    memcpy(&pkt[14], &debounce_ms, sizeof(uint32_t));
+
+    ESP_LOGI(TAG, "Enviando CMD_SET_DEBOUNCE (Alvo ID: %u, Debounce: %lu ms) para MAC %02X:%02X:%02X:%02X:%02X:%02X",
+             target_bench_id, (unsigned long)debounce_ms,
+             mac_to_use[0], mac_to_use[1], mac_to_use[2], mac_to_use[3], mac_to_use[4], mac_to_use[5]);
+
+    return lora_send_packet(pkt, sizeof(pkt));
+}
+
 static void lora_rx_task(void *pvParameters) {
     ESP_LOGI(TAG, "Tarefa de escuta RX iniciada (Core 0)");
 

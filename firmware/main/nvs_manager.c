@@ -295,6 +295,71 @@ esp_err_t nvs_manager_set_bench_id(uint16_t bench_id) {
     return err;
 }
 
+#define DEFAULT_DEBOUNCE_MS 300
+
+esp_err_t nvs_manager_get_debounce_ms(uint32_t *out_debounce_ms) {
+    if (out_debounce_ms == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Erro ao abrir NVS para ler debounce_ms (%s)", esp_err_to_name(err));
+        *out_debounce_ms = DEFAULT_DEBOUNCE_MS;
+        return err;
+    }
+
+    uint32_t val = 0;
+    err = nvs_get_u32(handle, "debounce_ms", &val);
+    if (err != ESP_OK || val < 10 || val > 5000) {
+        val = DEFAULT_DEBOUNCE_MS;
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "debounce_ms não encontrado na NVS. Usando padrão: %lu ms", (unsigned long)val);
+        } else {
+            ESP_LOGW(TAG, "Valor de 'debounce_ms' na NVS inválido (%s, lido=%lu). Resetando para padrão: %lu ms",
+                     esp_err_to_name(err), (unsigned long)val, (unsigned long)val);
+        }
+        nvs_set_u32(handle, "debounce_ms", val);
+        nvs_commit(handle);
+        err = ESP_OK;
+    }
+
+    *out_debounce_ms = val;
+    ESP_LOGI(TAG, "Tempo de debounce carregado da NVS: %lu ms", (unsigned long)val);
+    nvs_close(handle);
+    return ESP_OK;
+}
+
+esp_err_t nvs_manager_set_debounce_ms(uint32_t debounce_ms) {
+    if (debounce_ms < 10 || debounce_ms > 5000) {
+        ESP_LOGE(TAG, "debounce_ms inválido: %lu (deve estar entre 10 e 5000 ms)", (unsigned long)debounce_ms);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Erro ao abrir NVS para gravar debounce_ms (%s)", esp_err_to_name(err));
+        return err;
+    }
+
+    err = nvs_set_u32(handle, "debounce_ms", debounce_ms);
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "Novo tempo de debounce salvo na NVS: %lu ms", (unsigned long)debounce_ms);
+        } else {
+            ESP_LOGE(TAG, "Falha ao comitar debounce_ms na NVS (%s)", esp_err_to_name(err));
+        }
+    } else {
+        ESP_LOGE(TAG, "Falha ao gravar debounce_ms na NVS (%s)", esp_err_to_name(err));
+    }
+
+    nvs_close(handle);
+    return err;
+}
+
 esp_err_t nvs_manager_factory_reset(void) {
     ESP_LOGW(TAG, "Iniciando Factory Reset, apagando namespace '%s' da NVS...", NVS_NAMESPACE);
     nvs_handle_t handle;

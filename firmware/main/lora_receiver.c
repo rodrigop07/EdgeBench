@@ -11,6 +11,7 @@
 #include "mqtt_manager.h"
 #include "nvs_manager.h"
 #include "ota_manager.h"
+#include "sensor_manager.h"
 #include "wifi_manager.h"
 #include <string.h>
 #include <sys/time.h>
@@ -274,6 +275,57 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
             ESP_LOGI(TAG, "Atualizacao OTA disparada com sucesso via LoRa");
         } else {
             ESP_LOGW(TAG, "Falha ao disparar OTA via LoRa: %s", esp_err_to_name(ret));
+        }
+    } else if (msg_type == LORA_MSG_CMD_SET_DEBOUNCE) {
+        // formato: [0xEB, 0x60, TARGET_MAC(6B), TARGET_BENCH_ID(2B), TOKEN(4B), DEBOUNCE_MS(4B)] = 18 bytes
+        if (length < 18) {
+            ESP_LOGW(TAG, "Pacote CMD_SET_DEBOUNCE com tamanho insuficiente (%d bytes)", (int)length);
+            return;
+        }
+
+        uint32_t token = 0;
+        memcpy(&token, &payload[10], sizeof(uint32_t));
+        if (token != LORA_SECURITY_TOKEN) {
+            ESP_LOGW(TAG, "CMD_SET_DEBOUNCE rejeitado: Token invalido (0x%08lX)", (unsigned long)token);
+            return;
+        }
+
+        uint16_t current_bench_id = 0;
+        nvs_manager_get_bench_id(&current_bench_id);
+
+        uint16_t target_bench_id = 0;
+        memcpy(&target_bench_id, &payload[8], sizeof(uint16_t));
+
+        bool mac_matches = is_target_mac_me(&payload[2]);
+        bool bench_matches = (target_bench_id == 0 || target_bench_id == current_bench_id);
+
+        if (!mac_matches || !bench_matches) {
+            ESP_LOGD(TAG, "CMD_SET_DEBOUNCE ignorado: nao coincide com este no (Meu ID: %u, Alvo ID: %u)",
+                     current_bench_id, target_bench_id);
+            return;
+        }
+
+        uint32_t new_debounce_ms = 0;
+        memcpy(&new_debounce_ms, &payload[14], sizeof(uint32_t));
+
+        if (new_debounce_ms < 10 || new_debounce_ms > 5000) {
+            ESP_LOGW(TAG, "CMD_SET_DEBOUNCE com valor fora do intervalo permitido (%lu ms, esperado 10..5000)",
+                     (unsigned long)new_debounce_ms);
+            return;
+        }
+
+        ESP_LOGI(TAG, "Novo tempo de debounce recebido via LoRa: %lu ms (Anterior: %lu ms)",
+                 (unsigned long)new_debounce_ms, (unsigned long)sensor_manager_get_debounce_ms());
+
+        // aplica dinamicamente na ISR
+        sensor_manager_set_debounce_ms(new_debounce_ms);
+
+        // persiste na Flash para manter apos reinicializacao
+        esp_err_t err = nvs_manager_set_debounce_ms(new_debounce_ms);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "Novo tempo de debounce (%lu ms) salvo na NVS com sucesso!", (unsigned long)new_debounce_ms);
+        } else {
+            ESP_LOGE(TAG, "Falha ao gravar debounce_ms na NVS (%s)", esp_err_to_name(err));
         }
     } else {
         ESP_LOGD(TAG, "Tipo de mensagem LoRa desconhecido ou ignorado (0x%02X)", msg_type);
