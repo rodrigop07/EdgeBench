@@ -137,6 +137,11 @@ class EdgeBenchGateway:
         self._stop_event = threading.Event()
         self._rx_thread = None
         self._cmd_resp_queue = queue.Queue()
+        self._pairing_queue = queue.Queue()
+        self._pong_queue = queue.Queue()
+        self._bench_info_queue = queue.Queue()
+        self._monitor_queue = queue.Queue()
+        self._monitoring = False
 
     @staticmethod
     def list_available_ports() -> List[str]:
@@ -184,7 +189,7 @@ class EdgeBenchGateway:
             self.ser = serial.Serial(
                 port=self.port,
                 baudrate=self.baudrate,
-                timeout=self.timeout,
+                timeout=0.1,
                 write_timeout=self.timeout,
             )
             time.sleep(1.5)
@@ -209,28 +214,50 @@ class EdgeBenchGateway:
         while not self._stop_event.is_set():
             has_data = False
             raw_line = ""
-            with self._rx_lock:
-                if self.ser and self.ser.is_open and self.ser.in_waiting > 0:
-                    has_data = True
-                    try:
-                        raw_line = self.ser.readline().decode("utf-8", errors="ignore").strip()
-                    except Exception:
-                        raw_line = ""
+            try:
+                with self._rx_lock:
+                    if self.ser and self.ser.is_open and self.ser.in_waiting > 0:
+                        has_data = True
+                        try:
+                            raw_line = self.ser.readline().decode("utf-8", errors="ignore").strip()
+                        except Exception:
+                            raw_line = ""
 
-            if raw_line:
-                logger.debug(f"RX Serial <- {raw_line}")
-                if raw_line.startswith("{") and raw_line.endswith("}"):
-                    try:
-                        j = json.loads(raw_line)
-                        if j.get("type") == "telemetry":
-                            self._publish_telemetry(j)
-                        elif j.get("event") == "req_time":
-                            logger.info("[EVENT] Central solicitou horario (bancada ou boot). Enviando timestamp do PC...")
-                            self.sync_time()
-                        elif "status" in j:
-                            self._cmd_resp_queue.put(j)
-                    except Exception as e:
-                        logger.error(f"Erro no parse de JSON da serial: {e}")
+                if raw_line:
+                    logger.debug(f"RX Serial <- {raw_line}")
+                    if self._monitoring:
+                        self._monitor_queue.put(raw_line)
+
+                    if raw_line.startswith("{") and raw_line.endswith("}"):
+                        try:
+                            j = json.loads(raw_line)
+                            msg_type = j.get("type")
+                            event = j.get("event")
+                            status = j.get("status")
+                            msg = j.get("msg")
+
+                            if msg_type == "telemetry":
+                                # executa publicação MQTT em thread separada para nunca travar a leitura da serial
+                                threading.Thread(target=self._publish_telemetry, args=(j,), daemon=True).start()
+                            elif event == "req_time":
+                                logger.info("[EVENT] Central solicitou horario (bancada ou boot). Enviando timestamp do PC...")
+                                self.sync_time(wait_response=False)
+                            elif status == "pairing":
+                                self._pairing_queue.put(j)
+                            elif msg == "pong":
+                                self._pong_queue.put(j)
+                            elif msg == "bench_info":
+                                self._bench_info_queue.put(j)
+                            elif "status" in j:
+                                self._cmd_resp_queue.put(j)
+                        except Exception as e:
+                            logger.error(f"Erro no parse de JSON da serial: {e}")
+            except Exception as e:
+                logger.error(f"Exceção inesperada na leitura serial: {e}")
+                if self._monitoring:
+                    self._monitor_queue.put(f"[ALERTA SERIAL] Erro de I/O na porta: {e}")
+                time.sleep(0.5)
+
             if not has_data:
                 time.sleep(0.02)
 
@@ -364,6 +391,12 @@ class EdgeBenchGateway:
         Coleta respostas PONG durante 'wait_seconds' e retorna lista com as bancadas encontradas.
         """
         logger.info("Disparando PING Broadcast via LoRa...")
+        while not self._pong_queue.empty():
+            try:
+                self._pong_queue.get_nowait()
+            except queue.Empty:
+                break
+
         resp = self.send_command({"cmd": "ping_broadcast"})
         if not resp or resp.get("status") != "ok":
             logger.error(f"Falha ao enviar comando ping_broadcast: {resp}")
@@ -373,33 +406,33 @@ class EdgeBenchGateway:
         seen_macs = set()
         start_t = time.time()
         while (time.time() - start_t) < wait_seconds:
-            with self._rx_lock:
-                if self.ser and self.ser.in_waiting > 0:
-                    line = self.ser.readline().decode("utf-8", errors="ignore").strip()
-                else:
-                    line = None
-                if line and line.startswith("{") and '"msg":"pong"' in line:
-                    try:
-                        data = json.loads(line)
-                        mac = data.get("mac")
-                        if mac and mac not in seen_macs:
-                            seen_macs.add(mac)
-                            nodes.append(data)
-                            logger.info(f"Resposta PONG -> Bancada ID: {data.get('bench_id')}, MAC: {mac}")
-                    except Exception:
-                        pass
-                elif line:
-                    logger.debug(f"[ESP32] {line}")
-            time.sleep(0.04)
+            try:
+                data = self._pong_queue.get(timeout=0.1)
+                mac = data.get("mac")
+                if mac and mac not in seen_macs:
+                    seen_macs.add(mac)
+                    nodes.append(data)
+                    logger.info(f"Resposta PONG -> Bancada ID: {data.get('bench_id')}, MAC: {mac}")
+            except queue.Empty:
+                pass
 
         return nodes
 
-    def sync_time(self, timestamp: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    def is_alive(self) -> bool:
+        """Verifica se a porta serial e a thread de recepção continuam ativas."""
+        return (
+            self.ser is not None
+            and self.ser.is_open
+            and self._rx_thread is not None
+            and self._rx_thread.is_alive()
+        )
+
+    def sync_time(self, timestamp: Optional[int] = None, wait_response: bool = True) -> Optional[Dict[str, Any]]:
         # sincroniza o relógio do ESP32 com o timestamp Epoch Unix informado
         # se nenhum timestamp for passado, utiliza o horário atual do computador
         ts = int(time.time()) if timestamp is None else int(timestamp)
         logger.info(f"Sincronizando horario do Gateway com Epoch {ts}...")
-        return self.send_command({"cmd": "sync_time", "timestamp": ts})
+        return self.send_command({"cmd": "sync_time", "timestamp": ts}, wait_response=wait_response)
 
     def set_broker(self, broker_url: str) -> Optional[Dict[str, Any]]:
         # emite comando via rádio LoRa para atualizar a URL do Broker MQTT em todas as bancadas
@@ -430,6 +463,11 @@ class EdgeBenchGateway:
     def get_bench_info(self, target_bench_id: int = 0) -> Optional[Dict[str, Any]]:
         # consulta o endereço MAC do ESP32 associado a um ID de bancada via rádio LoRa
         logger.info(f"Consultando MAC da bancada ID {target_bench_id} via LoRa...")
+        while not self._bench_info_queue.empty():
+            try:
+                self._bench_info_queue.get_nowait()
+            except queue.Empty:
+                break
         return self.send_command({"cmd": "get_bench_info", "bench_id": target_bench_id})
 
     def beacon_now(self) -> Optional[Dict[str, Any]]:
@@ -663,77 +701,99 @@ def interactive_menu(port: Optional[str] = None):
                 if target_str.isdigit():
                     res = gw.get_bench_info(int(target_str))
                     print(f"-> Resposta do Gateway: {res}")
-                    print("[INFO] Aguardando resposta LoRa da bancada...")
-                    start_t = time.time()
-                    while (time.time() - start_t) < 2.0:
-                        with gw._rx_lock:
-                            if gw.ser and gw.ser.in_waiting > 0:
-                                line = gw.ser.readline().decode("utf-8", errors="ignore").strip()
-                            else:
-                                line = None
-                            if line.startswith("{") and "bench_info" in line:
-                                print(f"[DESCOBERTA] -> {line}")
-                                break
-                            elif line:
-                                print(f"[ESP32] {line}")
-                        time.sleep(0.05)
+                    print("[INFO] Aguardando resposta LoRa da bancada (2.5s)...")
+                    try:
+                        info = gw._bench_info_queue.get(timeout=2.5)
+                        print(f"[DESCOBERTA] -> Bancada ID: {info.get('bench_id')}, MAC: {info.get('mac')}")
+                    except queue.Empty:
+                        print("[AVISO] Nenhuma resposta recebida da bancada no tempo limite.")
             elif choice == "8":
-                print("\n[INFO] Monitorando porta serial... Pressione Ctrl+C para voltar ao menu.")
+                print("\n" + "=" * 65)
+                print(f" [MONITOR SERIAL CONTÍNUO] Escutando porta {gw.port or 'serial'}")
+                print(" -> Logs do ESP32 e eventos LoRa aparecerão abaixo em tempo real")
+                print(" -> Quando nao ha comunicacao, o rádio LoRa fica em silencio")
+                print(" -> O monitor emitira um batimento (heartbeat) a cada 10s de inatividade")
+                print(" -> Pressione Ctrl+C a qualquer momento para retornar ao menu")
+                print("=" * 65 + "\n")
+                gw._monitoring = True
+                while not gw._monitor_queue.empty():
+                    try:
+                        gw._monitor_queue.get_nowait()
+                    except queue.Empty:
+                        break
+
+                import datetime
+                last_activity = time.time()
+                last_heartbeat = time.time()
+
                 try:
                     while True:
-                        with gw._rx_lock:
-                            if gw.ser and gw.ser.in_waiting > 0:
-                                line = gw.ser.readline().decode("utf-8", errors="ignore").strip()
-                            else:
-                                line = None
-                            if line:
-                                print(f"[ESP32] {line}")
-                        time.sleep(0.05)
+                        if not gw.is_alive():
+                            print("\n[ALERTA CRÍTICO] Conexão serial com o ESP32 Central foi interrompida")
+                            break
+
+                        try:
+                            line = gw._monitor_queue.get(timeout=0.2)
+                            now_str = datetime.datetime.now().strftime("%H:%M:%S")
+                            print(f"[{now_str}] [ESP32] {line}")
+                            last_activity = time.time()
+                            last_heartbeat = time.time()
+                        except queue.Empty:
+                            now = time.time()
+                            # Emite heartbeat periódico após 10 segundos sem mensagens
+                            if now - last_heartbeat >= 10.0:
+                                now_str = datetime.datetime.now().strftime("%H:%M:%S")
+                                idle_sec = int(now - last_activity)
+                                print(f"[{now_str}] [STATUS] Monitor ativo em {gw.port} | Em espera (sem tráfego há {idle_sec}s)")
+                                last_heartbeat = now
                 except KeyboardInterrupt:
-                    print("\n[INFO] Retornando ao menu")
+                    print("\n[INFO] Monitor serial encerrado. Retornando ao menu...")
+                finally:
+                    gw._monitoring = False
             elif choice == "9":
                 print("\n" + "=" * 60)
                 print(" [MODO PAREAMENTO] Aguardando acionamento do botão físico (3s)...")
                 print(" Vá até a bancada física e segure o botão PRG por 3 segundos")
                 print(" Pressione Ctrl+C a qualquer momento para cancelar e voltar ao menu")
                 print("=" * 60 + "\n")
+                while not gw._pairing_queue.empty():
+                    try:
+                        gw._pairing_queue.get_nowait()
+                    except queue.Empty:
+                        break
                 try:
                     while True:
-                        with gw._rx_lock:
-                            if gw.ser and gw.ser.in_waiting > 0:
-                                line = gw.ser.readline().decode("utf-8", errors="ignore").strip()
-                            else:
-                                line = None
-                            if line.startswith("{") and "pairing" in line:
-                                try:
-                                    pairing_data = json.loads(line)
-                                    mac = pairing_data.get("mac")
-                                    current_id = pairing_data.get("bench_id")
-                                    id_display = f"{current_id} (Não configurado)" if current_id == 0 else f"{current_id}"
-                                    print("\n" + "*" * 60)
-                                    print(" [NOVA BANCADA DETECTADA VIA BOTÃO]")
-                                    print(f" Endereço MAC : {mac}")
-                                    print(f" ID Atual     : {id_display}")
-                                    print("*" * 60)
-                                    new_id_str = input(
-                                        f"\nDigite o NOVO ID para esta bancada (Enter para manter {current_id}): "
-                                    ).strip()
-                                    if new_id_str.isdigit():
-                                        new_id = int(new_id_str)
-                                        if new_id < 1:
-                                            print("[ERRO] O ID da bancada deve ser maior ou igual a 1 (0 é reservado para não configurado).")
-                                        else:
-                                            res = gw.set_bench(new_id, target_bench_id=0, target_mac=mac)
-                                            print(f"-> Resposta da Central: {res}")
-                                            print(f"-> Bancada {mac} configurada com sucesso com ID {new_id}!\n")
+                        try:
+                            pairing_data = gw._pairing_queue.get(timeout=0.1)
+                        except queue.Empty:
+                            pairing_data = None
+
+                        if pairing_data:
+                            try:
+                                mac = pairing_data.get("mac")
+                                current_id = pairing_data.get("bench_id")
+                                id_display = f"{current_id} (Não configurado)" if current_id == 0 else f"{current_id}"
+                                print("\n" + "*" * 60)
+                                print(" [NOVA BANCADA DETECTADA VIA BOTÃO]")
+                                print(f" Endereço MAC : {mac}")
+                                print(f" ID Atual     : {id_display}")
+                                print("*" * 60)
+                                new_id_str = input(
+                                    f"\nDigite o NOVO ID para esta bancada (Enter para manter {current_id}): "
+                                ).strip()
+                                if new_id_str.isdigit():
+                                    new_id = int(new_id_str)
+                                    if new_id < 1:
+                                        print("[ERRO] O ID da bancada deve ser maior ou igual a 1 (0 é reservado para não configurado).")
                                     else:
-                                        print("Nenhuma alteração realizada")
-                                    print("Continuando no modo pareamento... (Aguardando próxima bancada)")
-                                except Exception as e:
-                                    print(f"Erro ao processar anúncio de pareamento: {e}")
-                            elif line:
-                                print(f"[ESP32] {line}")
-                        time.sleep(0.05)
+                                        res = gw.set_bench(new_id, target_bench_id=0, target_mac=mac)
+                                        print(f"-> Resposta da Central: {res}")
+                                        print(f"-> Bancada {mac} configurada com sucesso com ID {new_id}!\n")
+                                else:
+                                    print("Nenhuma alteração realizada")
+                                print("Continuando no modo pareamento... (Aguardando próxima bancada)")
+                            except Exception as e:
+                                print(f"Erro ao processar anúncio de pareamento: {e}")
                 except KeyboardInterrupt:
                     print("\n[INFO] Modo de pareamento encerrado, retornando ao menu")
             elif choice == "10":
