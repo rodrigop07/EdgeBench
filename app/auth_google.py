@@ -13,7 +13,9 @@ Uso:
 import os
 import sys
 import json
+# pyrefly: ignore [missing-import]
 from google_auth_oauthlib.flow import InstalledAppFlow
+# pyrefly: ignore [missing-import]
 from googleapiclient.discovery import build
 
 SCOPES = [

@@ -287,6 +287,13 @@ def compute_kpis(df: pd.DataFrame, idleness_summary: Optional[Dict[str, Dict[str
         kpis["paradas"] = 0
         kpis["tempo_parado_min"] = 0.0
 
+    # Calcula taxa de peças por hora para a bancada (com base no primeiro e último registro)
+    kpis["horas_ativas"] = (kpis["ultimo_registro"] - kpis["primeiro_registro"]).dt.total_seconds() / 3600.0
+    kpis["taxa_pecas_hora"] = kpis.apply(
+        lambda row: round(row["total_pecas"] / row["horas_ativas"], 1) if row["horas_ativas"] > 0.01 else 0.0, 
+        axis=1
+    )
+
     kpis["paradas_rn06"] = kpis["paradas"]
     kpis["tempo_ocioso_min"] = kpis["tempo_parado_min"]
 

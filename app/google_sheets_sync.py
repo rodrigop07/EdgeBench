@@ -12,9 +12,13 @@ Funcionalidades:
 import logging
 import os
 from typing import Any, Dict, List, Optional
+# pyrefly: ignore [missing-import]
 from google.oauth2.credentials import Credentials
+# pyrefly: ignore [missing-import]
 from google.auth.transport.requests import Request
+# pyrefly: ignore [missing-import]
 from googleapiclient.discovery import build
+# pyrefly: ignore [missing-import]
 from googleapiclient.http import MediaFileUpload
 
 from config import google_config
