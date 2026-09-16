@@ -412,7 +412,10 @@ class EdgeBenchGateway:
                 if mac and mac not in seen_macs:
                     seen_macs.add(mac)
                     nodes.append(data)
-                    logger.info(f"Resposta PONG -> Bancada ID: {data.get('bench_id')}, MAC: {mac}")
+                    b_id = data.get("bench_id", 0)
+                    status_str = "Configurada" if b_id > 0 else "NÃO CONFIGURADA"
+                    logger.info(f"Resposta PONG -> Bancada ID: {b_id}, MAC: {mac} ({status_str})")
+                    print(f"  [+] Resposta #{len(nodes)} recebida: Bancada ID {b_id:<4} | MAC: {mac} ({status_str})")
             except queue.Empty:
                 pass
 
@@ -716,14 +719,33 @@ def interactive_menu(port: Optional[str] = None):
             elif choice == "7":
                 target_str = input("Digite o ID da bancada a consultar (1 a 65535, ou 0 para todas): ").strip()
                 if target_str.isdigit():
-                    res = gw.get_bench_info(int(target_str))
+                    tid = int(target_str)
+                    res = gw.get_bench_info(tid)
                     print(f"-> Resposta do Gateway: {res}")
-                    print("[INFO] Aguardando resposta LoRa da bancada (2.5s)...")
-                    try:
-                        info = gw._bench_info_queue.get(timeout=2.5)
-                        print(f"[DESCOBERTA] -> Bancada ID: {info.get('bench_id')}, MAC: {info.get('mac')}")
-                    except queue.Empty:
-                        print("[AVISO] Nenhuma resposta recebida da bancada no tempo limite.")
+                    if tid == 0:
+                        print("[INFO] Aguardando respostas LoRa de todas as bancadas (3.0s)...")
+                        seen_macs = set()
+                        start_t = time.time()
+                        count = 0
+                        while (time.time() - start_t) < 3.0:
+                            try:
+                                info = gw._bench_info_queue.get(timeout=0.1)
+                                mac = info.get("mac")
+                                if mac and mac not in seen_macs:
+                                    seen_macs.add(mac)
+                                    count += 1
+                                    print(f"  [+] [DESCOBERTA #{count}] -> Bancada ID: {info.get('bench_id')}, MAC: {mac}")
+                            except queue.Empty:
+                                pass
+                        if count == 0:
+                            print("[AVISO] Nenhuma resposta recebida no tempo limite.")
+                    else:
+                        print(f"[INFO] Aguardando resposta LoRa da bancada ID {tid} (2.5s)...")
+                        try:
+                            info = gw._bench_info_queue.get(timeout=2.5)
+                            print(f"[DESCOBERTA] -> Bancada ID: {info.get('bench_id')}, MAC: {info.get('mac')}")
+                        except queue.Empty:
+                            print(f"[AVISO] Nenhuma resposta recebida da bancada ID {tid} no tempo limite")
             elif choice == "8":
                 print("\n" + "=" * 65)
                 print(f" [MONITOR SERIAL CONTÍNUO] Escutando porta {gw.port or 'serial'}")
