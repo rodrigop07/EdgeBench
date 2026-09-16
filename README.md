@@ -1,7 +1,7 @@
 # EdgeBench: Sistema Embarcado IoT para Apontamento Automático de Produção
 
-> **Solução Ciber-Física de Baixo Custo para Digitalização do Chão de Fábrica (Cenário 6)**  
-> *Sensoriamento não-invasivo por barreira óptica, persistência offline de alta densidade (90+ dias) e telemetria industrial resiliente via MQTT.*
+> **Solução Ciber-Física de Baixo Custo para Digitalização e Telemetria do Chão de Fábrica (Cenário 6)**  
+> *Sensoriamento não-invasivo por barreira óptica, arquitetura de conectividade híbrida (Wi-Fi/MQTT + Rádio LoRa 915 MHz), bufferização offline de alta densidade (90+ dias), gateway mestre USB e integração analítica para PCP.*
 
 ---
 
@@ -19,300 +19,370 @@
 
 ## Visão Geral do Projeto
 
-Nas indústrias com linhas de montagem manuais, os operadores perdem frequentemente de **5% a 10% do seu tempo útil** registrando contagens de peças em pranchetas e formulários de papel. Esse processo tradicional gera três problemas críticos:
+Nas indústrias com linhas de montagem manuais, os operadores perdem frequentemente de **5% a 10% do seu tempo produtivo** registrando contagens de peças em pranchetas e formulários de papel. Esse processo tradicional gera três problemas críticos:
 1. **Drenagem da capacidade produtiva** devido a constantes pausas operacionais;
-2. **Erros humanos de contagem**, anotações retroativas e números aproximados;
+2. **Erros humanos de contagem**, anotações retroativas e números imprecisos;
 3. **Invisibilidade em tempo real** para o Planejamento e Controle da Produção (PCP), ocultando gargalos e paradas não programadas.
 
-O **EdgeBench** resolve esse problema por meio de uma abordagem **100% passiva e não invasiva**: um dispositivo de borda microcontrolado instalado na calha de escoamento de cada bancada. Cada peça montada que desliza pela rampa de gravidade corta um feixe infravermelho modulado, sendo contabilizada instantaneamente por interrupção de hardware (*ISR*), sem demandar nenhuma intervenção do trabalhador.
+O **EdgeBench** resolve esse problema por meio de uma abordagem **100% passiva e não invasiva**: dispositivos de borda microcontrolados instalados nas calhas de escoamento das bancadas. Cada peça montada que desliza pela rampa de gravidade corta um feixe infravermelho modulado, sendo contabilizada instantaneamente por interrupção de hardware (*ISR*), com feedback visual imediato e transmissão por telemetria, sem demandar nenhuma intervenção do trabalhador.
 
 ---
 
-## 1. Arquitetura do Sistema e Diagrama de Blocos
+## 1. Arquitetura Integral do Sistema
 
-A arquitetura do **EdgeBench** é estruturada em três camadas integradas (Borda Fabril, Mensageria/Rede e Infraestrutura Central), segregando claramente as responsabilidades de hardware e software para atingir determinismo temporal e alta resiliência.
+A arquitetura do **EdgeBench** é estruturada em três camadas integradas, segregando claramente as responsabilidades de hardware, firmware de tempo real, comunicação por radiofrequência e serviços de dados na nuvem/servidor.
 
-### 1.1 Diagrama de Blocos Preliminar
+### 1.1 Diagrama Geral de Arquitetura
 
 ```mermaid
-flowchart TD
-    subgraph BANCADA["CAMADA 1: CHÃO DE FÁBRICA / BORDA FABRIL (BANCADA)"]
+flowchart TB
+    subgraph CAMADA1["CAMADA 1: CHÃO DE FÁBRICA / BORDA FABRIL (NÓS DE BANCADA)"]
         direction TB
-        subgraph HW_SENSORES["Elementos de Hardware (Sensoriamento e Condicionamento)"]
-            PECA["Peça Montada (Passagem Física)"] --> CALHA["Calha de Saída por Gravidade"]
-            CALHA --> SENSOR["[HW] Sensor Fotoelétrico E18-D80NK\n(Saída NPN Coletor Aberto 5V)"]
-            FONTE["[HW] Fonte Chaveada 5V 2A\n(Filtro EMI)"] -.-> SENSOR
-            SENSOR --> COND["[HW] Condicionador de Sinal\n(Divisor Resistivo / Optoacoplador PC817)"]
+        subgraph FISICO["Elementos Físicos e Sensoriamento"]
+            PECA["Peça Montada (Gravidade)"] --> CALHA["Calha de Saída"]
+            CALHA --> SENSOR["Sensor E18-D80NK\n(NPN Coletor Aberto 5V)"]
+            BOTAO["Botão Físico PRG (GPIO 0)\n(Curto: Sync | Longo 3s: Pareamento)"]
+            LED["LED Onboard Branco (GPIO 35)\n(Feedback de Detecção e Ping)"]
         end
 
-        subgraph HW_ESP32["[HW] Nó de Borda: Heltec ESP32-S3 LoRa (Dual-Core Xtensa LX7 @ 240 MHz)"]
+        subgraph HELTEC_NODE["Heltec ESP32-S3 LoRa V3 (Dual-Core @ 240MHz, 8MB Flash)"]
             direction TB
-            subgraph CORE1["Core 1 (Software de Alta Prioridade / Tempo Real)"]
-                ISR["[SW] Tratador de Interrupção Externa (ISR)\n(Borda de Descida / IRAM)"]
-                DEBOUNCE["[SW] Filtro de Debounce Temporal (300 ms)\n(esp_timer_get_time)"]
-                QUEUE_SENS["[SW] Fila FreeRTOS de Eventos\n(xQueueSendFromISR)"]
-                ISR --> DEBOUNCE --> QUEUE_SENS
+            subgraph CORE1_BOX["Core 1 (Tempo Real Estrito / IRAM)"]
+                ISR_SENS["ISR de Detecção (GPIO 48)\n(Borda de Descida / IRAM_ATTR)"]
+                DEBOUNCE_BOX["Debounce Dinâmico\n(10..5000 ms - Padrão 300 ms)"]
+                TIMER_LED["Pulso Não-Bloqueante de LED (80ms)\n(esp_timer)"]
+                FILA_PROD["Fila FreeRTOS de Eventos"]
+
+                ISR_SENS --> DEBOUNCE_BOX --> FILA_PROD
+                ISR_SENS --> TIMER_LED
             end
 
-            subgraph CORE0["Core 0 (Software de Operação, Armazenamento e Rede)"]
-                TASK_PROC["[SW] Tarefa de Processamento e Despacho\n(Core 1 -> Core 0 via Fila)"]
-                FLASH_MGR["[SW] Driver de Persistência Flash\n(SPIFFS / LittleFS - Struct de 8 bytes)"]
-                WIFI_MQTT["[SW] Pilha Wi-Fi 802.11 b/g/n &\nCliente MQTT (QoS 1)"]
-                LORA_RX["[SW] Driver LoRa SX1262\n(Receptor de Beacon de Horário)"]
-                
-                TASK_PROC -->|Modo Offline| FLASH_MGR
-                TASK_PROC -->|Modo Online| WIFI_MQTT
-                FLASH_MGR -->|Reconexão FIFO| WIFI_MQTT
+            subgraph CORE0_BOX["Core 0 (Operação, Comunicação e Armazenamento)"]
+                TASK_DISPATCH["Task de Despacho e Controle"]
+                STORAGE_MGR["Storage Manager\n(LittleFS - Buffer Binário 8B)"]
+                WIFI_MQTT_MGR["Wi-Fi & MQTT Manager\n(QoS 1, Reconeção, Dreno FIFO)"]
+                LORA_RX_MGR["LoRa Receiver (SX1262 @ 915MHz)\n(Beacon, OTA, Setup, Ping/Pong)"]
+                NVS_MGR["NVS Manager\n(Credenciais, ID, Debounce)"]
+                OTA_MGR["OTA Manager\n(Dual Partition ota_0/ota_1)"]
+
+                FILA_PROD --> TASK_DISPATCH
+                TASK_DISPATCH -->|Rede Online| WIFI_MQTT_MGR
+                TASK_DISPATCH -->|Rede Offline| STORAGE_MGR
+                STORAGE_MGR -->|Dreno FIFO pós-reconexão| WIFI_MQTT_MGR
             end
 
-            FLASH_MEM["[HW] Memória Flash SPI Integrada (8 MB)"]
-            RADIO_LORA["[HW] Transceptor LoRa SX1262 (915 MHz)"]
-            
-            FLASH_MGR <--> FLASH_MEM
-            RADIO_LORA <--> LORA_RX
+            FLASH_CHIP["Memória Flash SPI 8MB\n(Partições: nvs, ota_0, ota_1, storage)"]
+            SX1262_NODE["Transceptor SX1262 (SPI)"]
+
+            STORAGE_MGR <--> FLASH_CHIP
+            NVS_MGR <--> FLASH_CHIP
+            OTA_MGR <--> FLASH_CHIP
+            LORA_RX_MGR <--> SX1262_NODE
         end
 
-        COND -->|Pulso Digital 3.3V| ISR
-        FONTE -.-> HW_ESP32
+        SENSOR -->|Pulso Digital 0V / Pull-Up 3.3V| ISR_SENS
+        TIMER_LED -.-> LED
+        BOTAO --> HELTEC_NODE
     end
 
-    subgraph REDE["CAMADA 2: CONECTIVIDADE & ROTEAMENTO"]
-        WIFI_NET["[HW] Rede Wi-Fi Industrial (2.4 GHz WPA2)"]
-        BROKER["[SW] Broker MQTT: Eclipse Mosquitto / EMQX\n(Tópicos: factory/bench/+/production)"]
-        WIFI_MQTT -->|Publicação MQTT QoS 1| WIFI_NET --> BROKER
-    end
+    subgraph CAMADA2["CAMADA 2: CONECTIVIDADE & GATEWAY CENTRAL"]
+        direction TB
+        WIFI_INFRA["Rede Wi-Fi Industrial 2.4 GHz"]
+        BROKER_MQTT["Broker MQTT: Mosquitto / EMQX\n(fabrica/bancada_+/producao)"]
 
-    subgraph BACKEND["CAMADA 3: INFRAESTRUTURA CENTRAL & BACKEND"]
-        subgraph HW_SERVER["[HW] Servidor Local / Workstation (Alimentado por No-Break / UPS)"]
-            GW_LORA["[HW/SW] Gateway Mestre LoRa USB\n(Emissor de Beacon Temporal 915 MHz)"]
-            INGESTOR["[SW] Ingestor Python 3 (Paho-MQTT)\n(Consumo Multithreaded & Idempotência)"]
-            ORM["[SW] Camada de Acesso a Dados (SQLAlchemy)"]
-            DB[(" [SW] Banco de Dados Relacional\n(PostgreSQL / SQLite) ")]
-            REPORTS["[SW] Motor de Relatórios (Pandas + OpenPyXL)\n(Fechamentos Horários e por Turno)"]
-            PCP["[SW] Arquivos .XLSX / Dashboard PCP\n(Engenharia Industrial)"]
+        subgraph CENTRAL_GW["Central Gateway (Heltec ESP32-S3 LoRa USB)"]
+            SX1262_GW["Transceptor SX1262 (915 MHz)"]
+            LORA_TX_GW["LoRa Transmitter & RX Listener"]
+            SERIAL_BRIDGE["Serial Bridge (UART JSON Bidirecional)"]
             
-            GW_LORA -.->|Beacon de Sincronização de Rádio| RADIO_LORA
-            BROKER -->|Subscrição MQTT| INGESTOR
-            INGESTOR --> ORM --> DB
-            DB --> REPORTS --> PCP
+            SX1262_GW <--> LORA_TX_GW <--> SERIAL_BRIDGE
+        end
+
+        WIFI_MQTT_MGR -->|Publicação MQTT QoS 1| WIFI_INFRA --> BROKER_MQTT
+        SX1262_NODE <-.->|LoRa 915 MHz (Beacon, Config, Ping/Pong, Telemetria)| SX1262_GW
+    end
+
+    subgraph CAMADA3["CAMADA 3: INFRAESTRUTURA CENTRAL, BACKEND & ANALYTICS"]
+        direction TB
+        subgraph SERVER["Estação de Trabalho / Servidor Local (PCP)"]
+            CLI_TOOL["app/uart_serial.py (CLI & Gateway Driver)\n(Ping Broadcast, Pareamento, Setup, OTA HTTP Server)"]
+            MQTT_SERVICE["app/mqtt_listener.py\n(Ingestão Contínua, Idempotência)"]
+            DATABASE[("Banco de Dados Relacional\n(SQLite / PostgreSQL - SQLAlchemy)")]
+            ANALYTICS["app/analytics.py & scheduler.py\n(Métricas OEE, Peças/Hora, Turnos)"]
+            EXCEL["app/excel_generator.py\n(Relatórios Executivos .XLSX)"]
+            CLOUD_SYNC["app/google_sheets_sync.py\n(Sincronização em Nuvem)"]
+
+            SERIAL_BRIDGE <-->|USB / VCP (Comandos JSON)| CLI_TOOL
+            BROKER_MQTT -->|Subscrição MQTT| MQTT_SERVICE
+            MQTT_SERVICE --> DATABASE
+            DATABASE --> ANALYTICS --> EXCEL
+            DATABASE --> CLOUD_SYNC
         end
     end
 ```
 
-### 1.2 Relações e Fluxo de Dados e Controle entre Elementos
+---
 
-1. **Detecção Física e Condicionamento (Hardware):** A peça liberada desliza pela calha e interrompe o feixe infravermelho do sensor `E18-D80NK`. A saída digital NPN transiciona para nível baixo e é compatibilizada em 3.3V pelo condicionador de sinal antes de atingir o GPIO do microcontrolador.
-2. **Tratamento de Borda e Debounce (Software - Core 1):** A borda de descida dispara imediatamente a `ISR` alocada na memória rápida IRAM do Core 1. O algoritmo temporal rejeita repiques com janela de 300 ms (`esp_timer_get_time()`) e posta o evento na fila FreeRTOS sem chamadas bloqueantes.
-3. **Persistência Binária e Despacho (Software - Core 0):** A tarefa operacional no Core 0 consome o evento. Se o Wi-Fi e o Broker estiverem disponíveis, serializa o registro e despacha via MQTT. Se houver queda de conexão, grava a estrutura compacta de 8 bytes (`count` + `timestamp`) na partição não volátil (SPIFFS / LittleFS).
-4. **Sincronização de Horário Resiliente:** Em operação normal, o microcontrolador sincroniza o relógio via SNTP. Em caso de quedas de energia simultâneas à indisponibilidade de rede, o rádio LoRa escuta o *Beacon* emitido pelo Gateway Central USB conectado ao servidor ininterrupto, restaurando a data/hora absoluta sem necessidade de baterias descartáveis.
-5. **Ingestão, Idempotência e Consolidação (Software Central):** O serviço em Python consome os tópicos MQTT com QoS 1, valida a chave única `(bancada_id, timestamp)` via SQLAlchemy para evitar duplicatas e persiste no banco de dados. Periodicamente, o script gera as planilhas consolidadas `.xlsx` por turno fabril (06h-14h, 14h-22h, 22h-06h).
+## 2. Componentes de Hardware e Pinagem
 
-### 1.3 Conexão Elétrica: ESP32-S3 e Sensor Fotoelétrico E18-D80NK
+O projeto adota o kit **Heltec WiFi LoRa 32 V3** (baseado no SoC **ESP32-S3FN8**), integrando microcontrolador dual-core, conectividade Wi-Fi, rádio LoRa de longo alcance e suporte a periféricos industriais.
 
-Diagrama direto de ligação entre o microcontrolador Heltec ESP32-S3 e o sensor de passagem E18-D80NK:
+### 2.1 Mapeamento de Pinos da Bancada (Nó de Borda)
+
+| Periférico / Função | Pino no ESP32-S3 | Modo / Nível Lógico | Descrição Técnica |
+| :--- | :---: | :--- | :--- |
+| **Sensor E18-D80NK (Sinal OUT)** | **GPIO 48** | Entrada com Pull-up interno | Saída NPN coletor aberto (0V na detecção da peça, 3.3V em repouso). |
+| **LED Indicador Onboard** | **GPIO 35** | Saída Digital (Ativo Alto) | Feedback visual imediato de passagem de peça (pulso 80ms) e Ping Broadcast (150ms). |
+| **Botão Físico PRG Onboard** | **GPIO 0** | Entrada com Pull-up interno | Toque curto (<1.5s): sync de hora/config; Toque longo (>3s): anúncio de pareamento. |
+| **Alimentação do Sensor (VCC)** | **5V / VBUS** | 5V DC | Alimentação positiva do sensor fotoelétrico. |
+| **Referência de Terra (GND)** | **GND** | 0V | Terra comum entre fonte, sensor e microcontrolador. |
+| **LoRa SX1262 NSS** | **GPIO 8** | Saída SPI (Chip Select) | Seleção do chip LoRa via barramento SPI dedicado. |
+| **LoRa SX1262 SCK** | **GPIO 9** | Saída SPI (Clock) | Sinal de clock do barramento SPI (até 10 MHz). |
+| **LoRa SX1262 MOSI** | **GPIO 10** | Saída SPI (Master Out) | Linha de dados do mestre para o transceptor. |
+| **LoRa SX1262 MISO** | **GPIO 11** | Entrada SPI (Master In) | Linha de dados do transceptor para o mestre. |
+| **LoRa SX1262 RST** | **GPIO 12** | Saída Digital | Reset de hardware do SX1262. |
+| **LoRa SX1262 BUSY** | **GPIO 13** | Entrada Digital | Sinal de ocupado do rádio (indica prontidão para comandos SPI). |
+| **LoRa SX1262 DIO1** | **GPIO 14** | Entrada com Interrupção | Interrupção externa disparada ao concluir recepção/transmissão RF. |
+| **LoRa VEXT Control** | **GPIO 36** | Saída Digital (Ativo Baixo) | Chaveamento de alimentação dos periféricos onboard da Heltec. |
+
+### 2.2 Conexão Elétrica do Sensor Fotoelétrico E18-D80NK
 
 ```mermaid
 graph LR
     subgraph SENSOR["Sensor Fotoelétrico E18-D80NK"]
         VCC["Fio Marrom (VCC)"]
         GND_S["Fio Azul (GND)"]
-        OUT["Fio Preto (Sinal OUT)"]
+        OUT["Fio Preto (Sinal OUT NPN)"]
     end
 
-    subgraph ESP32["Heltec ESP32-S3 LoRa"]
+    subgraph ESP32["Heltec ESP32-S3 LoRa V3"]
         PIN_5V["Pino 5V"]
         PIN_GND["Pino GND"]
-        PIN_GPIO48["GPIO 48 (Pull-Up Interno)"]
+        PIN_GPIO48["GPIO 48 (Pull-Up Ativo)"]
     end
 
-    VCC -->|Alimentação 5V| PIN_5V
-    GND_S -->|Referência Comum| PIN_GND
-    OUT -->|Interrupção NEGEDGE| PIN_GPIO48
+    VCC -->|Alimentação 5V DC| PIN_5V
+    GND_S -->|Terra Comum| PIN_GND
+    OUT -->|Pulso Digital 0V / 3.3V| PIN_GPIO48
 ```
 
-#### Mapeamento de Pinos e Fiação
-
-| Fio do Sensor E18-D80NK | Pino no ESP32-S3 | Descrição / Nível Lógico |
-| :--- | :--- | :--- |
-| **Marrom (VCC)** | **5V** | Alimentação positiva do sensor (5V DC) |
-| **Azul (GND)** | **GND** | Referência de terra comum |
-| **Preto (OUT)** | **GPIO 48** | Sinal digital NPN em coletor aberto (ativo em nível baixo `0V` na passagem da peça) |
-
-> **Nota de Proteção Elétrica:** O sensor E18-D80NK possui saída NPN em coletor aberto (atua chaveando para o terra). Com a ativação do pull-up interno do ESP32 (`GPIO_PULLUP_ENABLE`), a tensão no GPIO 48 varia com segurança estritamente entre **0V** (feixe cortado / peça detectada) e **3.3V** (em repouso), sem risco de sobretensão no microcontrolador.
+> **Nota de Proteção Elétrica:** O sensor E18-D80NK possui saída NPN em coletor aberto. O pull-up interno do ESP32 (`GPIO_PULLUP_ENABLE`) mantém a linha em **3.3V** em repouso. Ao detectar a peça, o transistor interno do sensor conecta o pino ao terra (**0V**), gerando borda de descida perfeitamente segura e imune a sobretensão.
 
 ---
 
+## 3. Protocolo de Comunicação LoRa (EdgeBench RF)
 
-## 2. Dependências e Recursos do Projeto
+Nas fábricas, quedas de Wi-Fi e panes elétricas podem ocorrer simultaneamente. O **EdgeBench** implementa um protocolo ponto-multiponto determinístico sobre rádio LoRa (915 MHz, SF7, BW 125 kHz, CR 4/5) para diagnóstico, sincronização, reconfiguração remota e telemetria de fallback.
 
-A tabela a seguir discrimina todas as dependências previstas para o ecossistema do **EdgeBench**, categorizadas por tipo, ambiente e finalidade técnica:
+### 3.1 Formato Geral do Pacote
 
-### 2.1 Plataformas e Ambientes de Execução
+Todos os pacotes LoRa possuem o byte identificador do projeto `0xEB` no cabeçalho:
 
-| Plataforma / Ambiente | Versão Mínima | Função no Projeto |
-| :--- | :--- | :--- |
-| **ESP-IDF (Espressif IoT Development Framework)** | `v5.0+` (Recomendado `v5.5.x`) | Framework oficial para compilação, flashing e configuração de periféricos do ESP32-S3. |
-| **FreeRTOS (Kernel SMP nativo ESP-IDF)** | `v10.x` | Sistema operacional de tempo real multitarefa com suporte a múltiplos núcleos. |
-| **Python** | `3.10+` | Interpretador para execução do serviço de ingestão, persistência e geração de planilhas. |
-| **Eclipse Mosquitto / EMQX** | `2.0+` | Broker de mensageria MQTT executado localmente ou em contêiner Docker. |
-| **Host de Desenvolvimento** | Windows 10/11 ou Ubuntu 22.04 LTS | Ambiente de compilação, monitoramento serial e execução dos serviços de apoio. |
+| Byte 0 | Byte 1 | Bytes 2..N |
+| :---: | :---: | :--- |
+| `0xEB` *(Identificador)* | `Msg Type` *(Opcode)* | *Payload específico do comando/resposta* |
 
-### 2.2 Bibliotecas e Componentes de Software
+### 3.2 Tabela de Opcodes e Estrutura dos Pacotes
 
-#### A. Firmware Embarcado (C / ESP-IDF)
-* `driver/gpio.h` e `esp_timer.h`: Configuração de pinos com interrupção externa e temporizador de precisão de microssegundos para debounce.
-* `freertos/FreeRTOS.h`, `freertos/queue.h`, `freertos/task.h`: Filas thread-safe para comunicação entre ISR e tarefas nos Cores 0 e 1.
-* `esp_spiffs.h` / `esp_littlefs.h`: Sistema de arquivos não volátil com *wear leveling* e proteção contra desligamento abrupto de energia.
-* `mqtt_client.h` (`esp-mqtt`): Cliente MQTT nativo com suporte a reconexão automática, QoS 1 e MQTT v3.1.1 / v5.0.
-* `esp_wifi.h`, `esp_event.h`, `esp_netif.h`: Pilha de rede TCP/IP e gerenciador de eventos de conectividade Wi-Fi.
-* `esp_netif_sntp.h`: Cliente de sincronização de relógio de rede via servidores NTP (ex.: `a.st1.ntp.br`).
+| Opcode | Mnemônico | Direção | Descrição / Payload |
+| :---: | :--- | :---: | :--- |
+| `0x10` | `LORA_MSG_REQ_TIME` | Nó ➔ Central | Solicita sincronização temporal: `[0xEB, 0x10, MAC(6B), BENCH_ID(2B)]` |
+| `0x11` | `LORA_MSG_RESP_TIME` | Central ➔ Nó | Resposta/Beacon de horário: `[0xEB, 0x11, TARGET_MAC(6B), EPOCH(8B)]` |
+| `0x20` | `LORA_MSG_REQ_CONFIG` | Nó ➔ Central | Solicita credenciais: `[0xEB, 0x20, MAC(6B), BENCH_ID(2B)]` |
+| `0x21` | `LORA_MSG_RESP_CONFIG` | Central ➔ Nó | Envia SSID, senha e broker: `[0xEB, 0x21, MAC(6B), TOKEN(4B), SSID_LEN, SSID, PASS_LEN, PASS, BROKER_LEN, BROKER]` |
+| `0x30` | `LORA_MSG_CMD_SET_BENCH` | Central ➔ Nó | Configura ID da bancada: `[0xEB, 0x30, TARGET_MAC(6B), TARGET_ID(2B), TOKEN(4B), NEW_ID(2B)]` |
+| `0x31` | `LORA_MSG_REQ_BENCH_INFO`| Central ➔ Nó | Consulta endereço MAC de uma bancada: `[0xEB, 0x31, TARGET_ID(2B)]` |
+| `0x32` | `LORA_MSG_RESP_BENCH_INFO`| Nó ➔ Central | Responde identificação: `[0xEB, 0x32, MAC(6B), BENCH_ID(2B)]` |
+| `0x33` | `LORA_MSG_ANNOUNCE_PAIRING`| Nó ➔ Central | Anúncio de pareamento físico pelo botão: `[0xEB, 0x33, MAC(6B), BENCH_ID(2B)]` |
+| `0x40` | `LORA_MSG_CMD_OTA` | Central ➔ Nó | Comanda início de OTA: `[0xEB, 0x40, TARGET_ID(2B), TOKEN(4B), URL_LEN, URL]` |
+| `0x50` | `LORA_MSG_TELEMETRY` | Nó ➔ Central | Telemetria de fallback offline: `[0xEB, 0x50, MAC(6B), BENCH_ID(2B), COUNT(4B), TIMESTAMP(8B)]` |
+| `0x60` | `LORA_MSG_CMD_SET_DEBOUNCE`| Central ➔ Nó | Configura debounce em ms: `[0xEB, 0x60, TARGET_MAC(6B), TARGET_ID(2B), TOKEN(4B), DEBOUNCE_MS(4B)]` |
+| `0x70` | `LORA_MSG_CMD_PING` | Central ➔ Broadcast | Disparo de Ping para descobrir bancadas online: `[0xEB, 0x70, TOKEN(4B)]` |
+| `0x71` | `LORA_MSG_RESP_PONG` | Nó ➔ Central | Resposta individual de presença: `[0xEB, 0x71, MAC(6B), BENCH_ID(2B)]` |
 
-#### B. Backend de Ingestão e Processamento (Python)
-* `paho-mqtt` (`>= 1.6.1`): Cliente MQTT para subscrição multithreaded nos tópicos das bancadas.
-* `SQLAlchemy` (`>= 2.0.0`): Camada ORM para persistência relacional com controle de transações e idempotência.
-* `pandas` (`>= 2.0.0`): Manipulação tabular de séries temporais de produção e cálculo de métricas agregadas por hora e turno.
-* `openpyxl` (`>= 3.1.0`): Formatação visual e geração automatizada dos arquivos executivos de planilha `.xlsx`.
+* **Token de Segurança:** Comandos críticos exigem o token `0xABCD1234` para rejeitar pacotes espúrios ou ruídos de RF.
 
-### 2.3 Ferramentas de Desenvolvimento e Build
+### 3.3 Regras de Endereçamento e Prevenção de Colisão
 
-* `idf.py`: Utilitário de linha de comando baseado em CMake e Ninja para gerenciar alvos, compilação e gravação da Flash.
-* `xtensa-esp32s3-elf-gcc`: Toolchain de compilação cruzada oficial da Espressif para a arquitetura Xtensa LX7.
-* `git`: Controle de versionamento do código-fonte e documentação.
-* `pip` e `virtualenv`: Gerenciamento isolado das dependências do ecossistema Python.
-
-### 2.4 Recursos de Hardware
-
-* **Nó de Borda:** Placa de desenvolvimento **Heltec ESP32-S3 LoRa** (Dual-Core 240 MHz, transceptor SX1262 915 MHz, Wi-Fi 2.4 GHz, BLE 5).
-* **Sensoriamento:** **Sensor Fotoelétrico E18-D80NK** (Infravermelho difuso ajustável de 3 a 80 cm, saída NPN coletor aberto 5V).
-* **Condicionador de Sinal:** Divisor de tensão resistivo (3.3 kΩ / 2.2 kΩ) ou módulo optoacoplador **PC817** para isolamento galvânico e proteção do GPIO.
-* **Alimentação de Bancada:** Fonte chaveada industrial 5V DC 2A Bivolt com filtro EMI contra transientes de rede.
-* **Infraestrutura Central:** Servidor/PC do PCP conectado a No-Break (UPS) e nó Heltec USB atuando como Gateway Mestre LoRa.
+1. **Broadcast (`FF:FF:FF:FF:FF:FF`):** Utilizado para sincronização de horário (`RESP_TIME`), credenciais Wi-Fi globais (`RESP_CONFIG`) e descoberta (`CMD_PING`).
+2. **Proteção Rigorosa de Setup (`ID == 0`):** Uma bancada recém-gravada inicia com ID `0` (*Não Configurada*). Para evitar que duas placas novas recebam o mesmo ID acidentalmente por broadcast, **uma bancada com ID 0 rejeita expressamente broadcasts de configuração** (`CMD_SET_BENCH`). Ela exige que o comando contenha seu endereço MAC individual específico.
+3. **Anti-Collision Jitter no Ping Broadcast:** Ao receber `CMD_PING` (0x70), para impedir que múltiplos nós transmitam ao mesmo tempo destruindo pacotes no ar (colisão ALOHA), cada bancada calcula um atraso pseudo-aleatório (`50ms a 1200ms` via `esp_random()`) antes de responder com `RESP_PONG`, garantindo que todas as bancadas sejam ouvidas pela Central.
 
 ---
 
-## 3. Organização do Repositório e Mapeamento dos Arquivos
+## 4. Recursos de Firmware e Usabilidade em Campo
 
-A estrutura do projeto está organizada de modo que cada tópico do sistema e componente da arquitetura corresponda a arquivos diretamente localizáveis no repositório:
+### 4.1 Botão Físico Multifunção (PRG - GPIO 0)
+Permite comissionar e configurar bancadas no chão de fábrica sem computador ou cabo USB:
+* **Toque Curto (< 1.5s):** A bancada transmite `REQ_TIME` e `REQ_CONFIG` via LoRa, solicitando imediatamente horário e credenciais da rede para a Central.
+* **Toque Longo (> 3s):** A bancada entra em modo de pareamento e emite `ANNOUNCE_PAIRING` (0x33). O operador na estação central vê o MAC e o ID no menu interativo do CLI e define o novo ID numerico da bancada na hora.
+
+### 4.2 Feedback Visual Não-Bloqueante (LED - GPIO 35)
+* **Passagem de Peça:** Dispara um pulso luminoso de **80 ms** acionado via `esp_timer` no Core 1, dando certeza ao operador de que o sensor registrou a contagem.
+* **Ping Broadcast:** Pisca por **150 ms** indicando que a placa recebeu a sondagem de rádio da Central.
+
+### 4.3 Debounce Dinâmico em Memória Não-Volátil (NVS)
+O tempo de debounce do sensor óptico pode ser ajustado de **10 ms a 5000 ms** remotamente via LoRa (`CMD_SET_DEBOUNCE`), sem necessidade de recompilar ou reiniciar o firmware. O novo valor é aplicado dinamicamente na ISR e gravado na NVS.
+
+### 4.4 Atualização Remota de Firmware (OTA)
+O particionamento da Flash conta com duas áreas de aplicação (`ota_0` e `ota_1`) de 1.5 MB cada e controle de rollback automático. O processo pode ser disparado tanto por comando LoRa (`CMD_OTA`) quanto pelo tópico MQTT `fabrica/bancada_<id>/ota`, realizando o download HTTP com validação SHA-256 e confirmação de inicialização bem-sucedida.
+
+---
+
+## 5. Estrutura e Organização do Repositório
 
 ```
 EdgeBench/
-├── README.md                                  # Guia executivo, arquitetura e instruções do projeto (este arquivo)
-├── LICENSE                                    # Licença de uso do código-fonte (Apache 2.0 / MIT)
-├── firmware/                                  # Componente de Software: Firmware Embarcado (ESP-IDF)
-│   ├── CMakeLists.txt                         # Script de compilação principal do projeto ESP-IDF
-│   ├── partitions.csv                         # Tabela de particionamento da memória Flash (área SPIFFS de 1 MB)
-│   ├── sdkconfig.defaults                     # Configurações base do SDK (FreeRTOS, clock, alocação de memória)
-│   └── main/                                  # Código-fonte principal do dispositivo de borda
-│       ├── CMakeLists.txt                     # Registro de arquivos-fonte e dependências do componente main
-│       ├── Kconfig.projbuild                  # Interface menuconfig para configuração de Wi-Fi, MQTT e pinos
-│       └── app_main.c                         # Implementação central: ISR, Debounce, filas, SPIFFS e MQTT
-└── requisitos/                                # Componente de Documentação de Engenharia
-    └── especificacao_tecnica.md               # DOCUMENTO MESTRE: Requisitos RF/RNF/RN, Escopo,
-                                               #   Levantamento Técnico, IoT vs Visão Computacional,
-                                               #   Análise Físico-Mecânica e Visão Crítica Fabril
+├── README.md                                  # Guia mestre de arquitetura, protocolo e instruções (este documento)
+├── LICENSE                                    # Licença de uso do código-fonte
+├── firmware/                                  # Firmware do Nó de Borda Fabril (ESP32-S3 de Bancada)
+│   ├── CMakeLists.txt                         # Script de compilação do projeto da bancada
+│   ├── partitions.csv                         # Particionamento: nvs, otadata, ota_0, ota_1, storage (LittleFS)
+│   ├── sdkconfig.defaults                     # Configurações do SDK (FreeRTOS dual-core, clock 240MHz)
+│   └── main/
+│       ├── app_main.c                         # Ponto de entrada, orquestração e inicialização dos subsistemas
+│       ├── sensor_manager.c/.h                # ISR no Core 1, debounce dinâmico e feedback no LED GPIO 35
+│       ├── storage_manager.c/.h               # Buffer binário não-volátil (LittleFS, 8 bytes por registro)
+│       ├── nvs_manager.c/.h                   # Gerenciamento NVS (Wi-Fi, Broker, Bench ID, Debounce)
+│       ├── wifi_manager.c/.h                  # Pilha Wi-Fi com reconexão automática e reconfiguração dinâmica
+│       ├── mqtt_manager.c/.h                  # Cliente MQTT QoS 1, tópicos dinâmicos e dreno FIFO pós-queda
+│       ├── lora_receiver.c/.h                 # Transceptor SX1262 SPI, parser de pacotes, Ping/Pong, Beacon e OTA
+│       ├── button_manager.c/.h                # Tratamento do botão PRG (toque curto e anúncio de pareamento 3s)
+│       ├── ota_manager.c/.h                   # Motor de download OTA HTTP com rollback de segurança
+│       └── Kconfig.projbuild                  # Configurações padrão via menuconfig
+├── firmware_central/                          # Firmware do Gateway Central Mestre USB (ESP32-S3)
+│   ├── CMakeLists.txt                         # Script de compilação do Gateway Central
+│   ├── partitions.csv                         # Particionamento da Flash da Central
+│   └── main/
+│       ├── main.c                             # Ponto de entrada da Central
+│       ├── lora_transmitter.c/.h              # Transmissor e receptor contínuo LoRa SX1262
+│       ├── serial_bridge.c/.h                 # Ponte serial UART bidirecional (Parser JSON <-> Comandos LoRa)
+│       └── nvs_config.c/.h                    # Persistência de credenciais mestres de Wi-Fi e Broker
+├── app/                                       # Backend de Ingestão, Painel Serial e Analítica (Python)
+│   ├── uart_serial.py                         # Painel interativo CLI (Ping Broadcast, Pareamento, OTA Server)
+│   ├── main.py                                # Ponto de entrada consolidado dos serviços Python
+│   ├── mqtt_listener.py                       # Ingestor MQTT multithread com prevenção de duplicatas
+│   ├── database.py / models.py                # Camada ORM (SQLAlchemy) e modelos relacionais
+│   ├── excel_generator.py                     # Geração automatizada de planilhas executivas (.xlsx) por turno
+│   ├── analytics.py                           # Cálculo de indicadores industriais (peças/hora, OEE, paradas)
+│   ├── google_sheets_sync.py                  # Sincronização de apontamentos em nuvem (Google Sheets)
+│   ├── scheduler.py                           # Agendador de relatórios e fechamentos de turno fabril
+│   ├── docker-compose.yml                     # Subida rápida de Mosquitto, PostgreSQL e Ingestor
+│   └── Dockerfile                             # Contêiner do backend de dados
+└── requisitos/
+    └── especificacao_tecnica.md               # Especificação aprofundada: RFs, RNFs, análise mecânica e cinemática
 ```
 
-### Rastreabilidade entre Arquitetura e Arquivos do Projeto
+### Rastreabilidade de Módulos e Funcionalidades
 
-| Tópico / Módulo da Arquitetura | Elemento Representado | Arquivo no Repositório | Descrição |
-| :--- | :--- | :--- | :--- |
-| **ISR e Debounce de Sensor** | Core 1 (Software) | [`firmware/main/app_main.c`](firmware/main/app_main.c) | `sensor_gpio_isr_handler()` e temporização de 300 ms via `esp_timer`. |
-| **Persistência Offline Local** | Core 0 / Flash SPI | [`firmware/main/app_main.c`](firmware/main/app_main.c) | `init_spiffs()` e rotina de escrita/leitura da struct `sensor_data_record_t`. |
-| **Particionamento da Memória** | Memória Flash (HW/SW) | [`firmware/partitions.csv`](firmware/partitions.csv) | Definição da partição `spiffs` de armazenamento offline resiliente. |
-| **Conectividade Wi-Fi e MQTT** | Core 0 / Mensageria | [`firmware/main/app_main.c`](firmware/main/app_main.c) | Inicialização da pilha Wi-Fi, cliente SNTP e despachante MQTT QoS 1. |
-| **Parâmetros de Configuração** | Parâmetros de Borda | [`firmware/main/Kconfig.projbuild`](firmware/main/Kconfig.projbuild) | Configuração via terminal dos pinos do sensor e credenciais de rede. |
-| **Especificação de Requisitos** | Documentação Mestre | [`requisitos/especificacao_tecnica.md`](requisitos/especificacao_tecnica.md) | Detalhamento integral de RFs, RNFs, Regras de Negócio e análise física. |
+| Módulo da Arquitetura | Arquivo Principal | Função Central |
+| :--- | :--- | :--- |
+| **Sensoriamento & Debounce** | [`firmware/main/sensor_manager.c`](firmware/main/sensor_manager.c) | Contagem atômica na ISR, debounce dinâmico, pulso do LED GPIO 35. |
+| **Armazenamento Offline** | [`firmware/main/storage_manager.c`](firmware/main/storage_manager.c) | Buffer binário de 8 bytes na partição LittleFS (90+ dias de autonomia). |
+| **Protocolo LoRa das Bancadas** | [`firmware/main/lora_receiver.c`](firmware/main/lora_receiver.c) | Recepção de Beacons, pareamento, Ping/Pong e atualização OTA. |
+| **Botão de Setup Rápido** | [`firmware/main/button_manager.c`](firmware/main/button_manager.c) | Toque curto (<1.5s) e toque longo (>3s) para anúncio de pareamento. |
+| **Gateway Mestre LoRa** | [`firmware_central/main/lora_transmitter.c`](firmware_central/main/lora_transmitter.c) | Transmissão de comandos de rádio e escuta RX contínua na Central. |
+| **Ponte Serial UART** | [`firmware_central/main/serial_bridge.c`](firmware_central/main/serial_bridge.c) | Tradução bidirecional entre comandos JSON serial e pacotes RF. |
+| **Painel Serial & Driver** | [`app/uart_serial.py`](app/uart_serial.py) | Menu com 11 funções (Ping Broadcast, Pareamento, Servidor HTTP OTA). |
+| **Ingestor de Telemetria** | [`app/mqtt_listener.py`](app/mqtt_listener.py) | Ingestão MQTT com chave única `(bench_id, timestamp)` para idempotência. |
 
 ---
 
-## 4. Guia de Preparação, Instalação e Configuração
+## 6. Guia de Compilação, Gravação e Uso
 
-Os passos a seguir descrevem a preparação do ambiente, correspondendo fielmente às dependências listadas e aos elementos de arquitetura projetados:
+### 6.1 Compilação do Firmware das Bancadas (`firmware`)
 
-### 4.1 Pré-requisitos e Instalação de Ferramentas
-
-1. **Instalar o ESP-IDF v5.x:**
-   Siga o guia oficial de instalação da Espressif para a sua plataforma ([Guia de Instalação ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/get-started/)).
-2. **Carregar as variáveis de ambiente no terminal:**
-   * **Linux/macOS:**
-     ```bash
-     . $HOME/esp/esp-idf/export.sh
-     ```
-   * **Windows (PowerShell):**
-     ```powershell
-     . $env:USERPROFILE\esp\esp-idf\export.ps1
-     ```
-
-### 4.2 Configuração, Compilação e Gravação do Firmware (Nó de Borda)
-
-1. **Navegar até o diretório do firmware:**
+1. Abra o terminal configurado com o ESP-IDF v5.x (ou PowerShell do ESP-IDF):
+   ```powershell
+   & "C:\Espressif\tools\Microsoft.v5.5.5.PowerShell_profile.ps1"
+   ```
+2. Navegue até o diretório do firmware e compile:
    ```bash
    cd firmware
-   ```
-2. **Definir o microcontrolador alvo (ESP32-S3):**
-   ```bash
    idf.py set-target esp32s3
-   ```
-3. **Configurar as credenciais de rede e pinagem via Menuconfig:**
-   ```bash
-   idf.py menuconfig
-   ```
-   * Em `Example Connection Configuration`, defina o SSID e senha do Wi-Fi industrial.
-   * Em `Component config -> ESP-MQTT Configuration`, configure o endereço do Broker MQTT (ex.: `mqtt://192.168.1.100:1883`).
-   * Salve e saia do menu interativo.
-4. **Compilar o projeto:**
-   ```bash
    idf.py build
    ```
-5. **Gravar na placa Heltec ESP32-S3 e abrir o monitor serial:**
+3. Conecte a placa da bancada via USB e grave:
    ```bash
-   # Substitua COMx pela porta correspondente no Windows ou /dev/ttyUSBx no Linux
-   idf.py -p COMx flash monitor
+   idf.py -p COM_PORT flash monitor
    ```
 
-### 4.3 Inicialização do Broker MQTT (Eclipse Mosquitto)
+### 6.2 Compilação do Firmware da Central Gateway (`firmware_central`)
 
-Em ambiente local ou servidor central, inicie o broker MQTT via Docker ou instalação nativa:
+1. No mesmo ambiente ESP-IDF:
+   ```bash
+   cd firmware_central
+   idf.py set-target esp32s3
+   idf.py build
+   ```
+2. Conecte o ESP32 da Central via USB e grave:
+   ```bash
+   idf.py -p COM_PORT flash monitor
+   ```
+
+### 6.3 Utilização do Painel Serial CLI (`app/uart_serial.py`)
+
+Com o ESP32 Central conectado na USB do computador:
 
 ```bash
-# Execução simplificada via Docker na porta padrão 1883
-docker run -d --name mosquitto -p 1883:1883 -p 9001:9001 eclipse-mosquitto:2.0
+cd app
+python -m venv venv
+.\venv\Scripts\activate
+pip install -r requirements.txt
+python uart_serial.py
 ```
 
-### 4.4 Preparação e Execução do Backend de Ingestão (Python)
+O menu interativo será exibido no terminal:
 
-1. **Criar e ativar o ambiente virtual na estação servidora:**
-   ```bash
-   python -m venv venv
-   # No Windows:
-   .\venv\Scripts\activate
-   # No Linux/macOS:
-   source venv/bin/activate
-   ```
-2. **Instalar as bibliotecas requeridas:**
-   ```bash
-   pip install paho-mqtt sqlalchemy pandas openpyxl
-   ```
-3. **Executar o serviço de ingestão e consolidação:**
-   O serviço subscreverá nos tópicos `factory/bench/+/production`, gravando os apontamentos em banco e gerando periodicamente as planilhas consolidadas `.xlsx` nas pastas de rede do PCP.
+```
+============================================================
+    EdgeBench - Painel Serial Central
+============================================================
+
+Selecione uma operacao:
+  [1] Testar conexao com Gateway (Ping local)
+  [2] Ping Broadcast LoRa (Descobrir todas as bancadas online: MAC e ID)
+  [3] Sincronizar Horario do PC (Emitir Beacon de Horario)
+  [4] Reconfigurar Wi-Fi das bancadas via LoRa
+  [5] Reconfigurar Broker MQTT das bancadas via LoRa
+  [6] Reconfigurar ID de Bancada via LoRa (identificando pelo ID atual)
+  [7] Consultar MAC de uma Bancada via LoRa
+  [8] Monitorar logs contínuos da Serial
+  [9] Modo de Pareamento Rápido (Aguardando botão físico da bancada...)
+  [10] Gerenciar Atualização OTA de Firmware (Servidor Local / LoRa / MQTT)
+  [11] Reconfigurar Tempo de Debounce do Sensor via LoRa
+  [0] Sair
+```
+
+* **Opção [2] (Ping Broadcast):** A Central envia o comando `0x70` via rádio; todas as bancadas no raio de alcance piscam o LED, aguardam o jitter anti-colisão e respondem. O script exibe a tabela em tempo real com o status de cada nó.
+* **Opção [9] (Modo Pareamento Rápido):** Coloca a Central em escuta. Basta pressionar o botão PRG da bancada por 3 segundos para que o computador detecte a placa e permita definir seu novo ID na hora.
+* **Opção [10] (OTA):** Inicia um servidor HTTP local temporário na máquina e comanda as bancadas via rádio ou MQTT para baixarem o binário compilado.
+
+### 6.4 Inicialização dos Serviços de Backend (Docker Compose)
+
+Para rodar o Broker Mosquitto e a stack analítica com banco de dados em contêineres:
+
+```bash
+cd app
+docker-compose up -d
+```
 
 ---
 
-## 5. Principais Diferenciais de Engenharia
+## 7. Principais Diferenciais de Engenharia
 
-* **Salvamento Local (Offline-First):** Se o Wi-Fi ou a rede fabril caírem, o microcontrolador armazena localmente os registros em memória Flash não volátil (partição SPIFFS / LittleFS) protegida contra cortes bruscos de energia (*power-loss recovery*).
-* **Buffer Binário de Alta Densidade:** Cada registro ocupa uma estrutura binária compacta em C de apenas **8 bytes** (`count` + `timestamp`), viabilizando armazenar mais de **131.000 eventos** em apenas 1 MB de Flash (mais de **90 dias de autonomia** contínua sem conexão).
-* **Processamento Dual-Core Dedicado:**
-  * **Core 1:** Exclusivo para o tratador de interrupções de hardware (*ISR*) do sensor óptico e filtragem temporal de repique (*debounce*).
-  * **Core 0:** Gerenciamento das pilhas de rede Wi-Fi, cliente MQTT e tarefas de escrita/leitura da memória Flash.
-* **Imunidade a Trepidações (Debounce Digital de 300 ms):** O algoritmo temporal rejeita repiques elétricos e oscilações da peça durante a descida na calha.
-* **Mensageria com Garantia de Entrega (MQTT QoS 1):** Os dados acumulados durante quedas de rede são transmitidos em ordem cronológica estrita (*FIFO*) e só são expurgados da Flash após a confirmação expressa (*PUBACK*) do Broker.
-* **Resiliência a Apagões Simultâneos:** Suporte à sincronização temporal por **Beacon de Rádio LoRa (915 MHz)** emitido pelo servidor central (alimentado por no-break), garantindo a recuperação da data/hora exata mesmo diante de múltiplos desligamentos da bancada sem rede Wi-Fi, sem demandar manutenção de baterias descartáveis.
+1. **Salvamento Local (Offline-First):** Em caso de falha de infraestrutura de rede, o nó armazena os registros em memória Flash não volátil com particionamento LittleFS e proteção contra desligamentos abruptos de energia.
+2. **Buffer Binário de Alta Densidade (8 Bytes):** Cada registro de produção consome apenas 8 bytes (`count` + `timestamp`), comportando mais de **131.000 eventos** em apenas 1 MB de Flash (mais de **90 dias de autonomia** contínua sem Wi-Fi).
+3. **Pilha Dual-Core Segregada:**
+   * **Core 1:** Exclusivo para tempo real crítico (ISR do sensor óptico, debounce temporal e pulso do LED).
+   * **Core 0:** Gerenciamento das pilhas de rede Wi-Fi, cliente MQTT, rádio LoRa e operações de Flash.
+4. **Resiliência Máxima por LoRa 915 MHz:** Recuperação de horário absoluto, reconfiguração remota e telemetria de emergência mesmo durante apagões simultâneos de rede na fábrica.
+5. **Comissionamento Zero-Config:** Identificação inicial por anúncio físico de botão (3 segundos) e descoberta por Ping Broadcast com anti-colisão no ar.
 
 ---
 
-## 6. Documentação Técnica Completa
+## 8. Documentação Complementar
 
-Para a especificação técnica aprofundada com todos os diagramas conceituais e arquiteturais, memória de cálculo dimensional e cinemática da calha, análise comparativa detalhada entre IoT e Visão Computacional e análise crítica do ambiente fabril, consulte:
+Para consultar os requisitos detalhados de engenharia, especificações funcionais e não-funcionais (RFs/RNFs), análise cinemática da rampa de peças e comparativo técnico entre IoT e Visão Computacional, consulte:
 
-**[especificacao_tecnica.md](requisitos/especificacao_tecnica.md)**
+📄 **[especificacao_tecnica.md](requisitos/especificacao_tecnica.md)**

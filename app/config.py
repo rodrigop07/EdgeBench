@@ -43,7 +43,7 @@ class MQTTConfig:
     keepalive: int = field(default_factory=lambda: int(os.getenv("MQTT_KEEPALIVE", "60")))
     topic_filter: str = field(
         default_factory=lambda: os.getenv(
-            "MQTT_TOPIC_FILTER", "edgebench/bancadas/+/telemetria"
+            "MQTT_TOPIC_FILTER", "fabrica/bancada_+/producao"
         )
     )
     qos: int = field(default_factory=lambda: int(os.getenv("MQTT_QOS", "1")))
