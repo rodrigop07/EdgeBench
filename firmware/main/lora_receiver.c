@@ -347,6 +347,33 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
         } else {
             ESP_LOGE(TAG, "Falha ao gravar debounce_ms na NVS (%s)", esp_err_to_name(err));
         }
+    } else if (msg_type == LORA_MSG_CMD_PING) {
+        // formato: [0xEB, 0x70, TOKEN(4B)] = 6 bytes
+        if (length < 6) {
+            ESP_LOGW(TAG, "Pacote CMD_PING com tamanho insuficiente (%d bytes)", (int)length);
+            return;
+        }
+
+        uint32_t token = 0;
+        memcpy(&token, &payload[2], sizeof(uint32_t));
+        if (token != LORA_SECURITY_TOKEN) {
+            ESP_LOGW(TAG, "CMD_PING rejeitado: Token invalido (0x%08lX)", (unsigned long)token);
+            return;
+        }
+
+        uint16_t my_id = 0;
+        nvs_manager_get_bench_id(&my_id);
+
+        ESP_LOGI(TAG, "Ping Broadcast recebido da Central, respondendo PONG (ID: %u, MAC: %02X:%02X:%02X:%02X:%02X:%02X)...",
+                 my_id, s_my_mac[0], s_my_mac[1], s_my_mac[2], s_my_mac[3], s_my_mac[4], s_my_mac[5]);
+
+        // formato de resposta: [0xEB, 0x71, MAC(6B), BENCH_ID(2B)] = 10 bytes
+        uint8_t resp[10];
+        resp[0] = LORA_ESPECIAL_BYTE;
+        resp[1] = LORA_MSG_RESP_PONG;
+        memcpy(&resp[2], s_my_mac, 6);
+        memcpy(&resp[8], &my_id, sizeof(uint16_t));
+        lora_send_packet(resp, sizeof(resp));
     } else {
         ESP_LOGD(TAG, "Tipo de mensagem LoRa desconhecido ou ignorado (0x%02X)", msg_type);
     }
