@@ -88,7 +88,7 @@ flowchart TB
     subgraph CAMADA2["CAMADA 2: CONECTIVIDADE & GATEWAY CENTRAL"]
         direction TB
         WIFI_INFRA["Rede Wi-Fi Industrial 2.4 GHz"]
-        BROKER_MQTT["Broker MQTT: Mosquitto / EMQX\n(factory/bench/+/production)"]
+        BROKER_MQTT["Broker MQTT: Mosquitto / EMQX\n(fabrica/bancada_+/producao)"]
 
         subgraph CENTRAL_GW["Central Gateway (Heltec ESP32-S3 LoRa USB)"]
             SX1262_GW["Transceptor SX1262 (915 MHz)"]
@@ -225,7 +225,7 @@ Permite comissionar e configurar bancadas no chão de fábrica sem computador ou
 O tempo de debounce do sensor óptico pode ser ajustado de **10 ms a 5000 ms** remotamente via LoRa (`CMD_SET_DEBOUNCE`), sem necessidade de recompilar ou reiniciar o firmware. O novo valor é aplicado dinamicamente na ISR e gravado na NVS.
 
 ### 4.4 Atualização Remota de Firmware (OTA)
-O particionamento da Flash conta com duas áreas de aplicação (`ota_0` e `ota_1`) de 1.5 MB cada e controle de rollback automático. O processo pode ser disparado tanto por comando LoRa (`CMD_OTA`) quanto pelo tópico MQTT `factory/bench/<id>/cmd/ota`, realizando o download HTTP com validação SHA-256 e confirmação de inicialização bem-sucedida.
+O particionamento da Flash conta com duas áreas de aplicação (`ota_0` e `ota_1`) de 1.5 MB cada e controle de rollback automático. O processo pode ser disparado tanto por comando LoRa (`CMD_OTA`) quanto pelo tópico MQTT `fabrica/bancada_<id>/ota`, realizando o download HTTP com validação SHA-256 e confirmação de inicialização bem-sucedida.
 
 ---
 
