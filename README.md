@@ -1,7 +1,7 @@
 # EdgeBench: Sistema Embarcado IoT para Apontamento Automático de Produção
 
 > **Solução Ciber-Física de Baixo Custo para Digitalização e Telemetria do Chão de Fábrica (Cenário 6)**  
-> *Sensoriamento não-invasivo por barreira óptica, arquitetura de conectividade híbrida (Wi-Fi/MQTT + Rádio LoRa 915 MHz), bufferização offline de alta densidade (90+ dias), gateway mestre USB e integração analítica para PCP.*
+> *Sensoriamento não-invasivo por barreira óptica, arquitetura de conectividade híbrida (Wi-Fi/MQTT + Rádio LoRa 915 MHz), bufferização offline de alta densidade, gateway mestre USB e integração analítica para PCP.*
 
 ---
 
@@ -28,11 +28,48 @@ O **EdgeBench** resolve esse problema por meio de uma abordagem **100% passiva e
 
 ---
 
-## 1. Arquitetura Integral do Sistema
+## 1. Pré-requisitos
+
+Esta seção lista **tudo** o que é necessário para reproduzir o projeto do zero.
+
+### 1.1 Lista de Materiais
+
+| Qtd. | Componente | Especificação | Função no Projeto |
+| :---: | :--- | :--- | :--- |
+| 1× | **Heltec WiFi LoRa 32 V3** | ESP32-S3FN8, SX1262, 8 MB Flash, USB-C | **Nó de Bancada** — sensoriamento e telemetria |
+| 1× | **Heltec WiFi LoRa 32 V3** | ESP32-S3FN8, SX1262, 8 MB Flash, USB-C | **Central Gateway** — ponte USB ↔ LoRa |
+| 1× | **Sensor Fotoelétrico E18-D80NK** | Barreira difusa, NPN coletor aberto, 5V, alcance 3–80 cm | Detecção de peças na calha de saída |
+| 2× | **Cabo USB-C para USB-A/C** | Dados + alimentação, mínimo 1 m | Gravação de firmware e alimentação |
+| 1× | **Fonte de alimentação 5V** | USB ou fonte externa 5V/1A | Alimentação da bancada em campo (quando sem USB do PC) |
+| —  | **Jumpers / fios de conexão** | Macho-fêmea, 3 unidades (VCC, GND, SINAL) | Interligação do sensor ao ESP32 |
+
+> **Nota:** Para cada bancada adicional no chão de fábrica, é necessário **1× Heltec WiFi LoRa 32 V3** e **1× Sensor E18-D80NK** adicionais. A Central Gateway é compartilhada por todas as bancadas via rádio LoRa.
+
+### 1.2 Requisitos de Software
+
+| Software | Versão Mínima | Finalidade | Link de Instalação |
+| :--- | :---: | :--- | :--- |
+| **ESP-IDF** | v5.5.x | Toolchain de compilação e gravação dos firmwares (bancada e central) | [docs.espressif.com/projects/esp-idf](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32s3/get-started/) |
+| **Python** | 3.10+ | Painel Serial CLI (`uart_serial.py`) e Backend de dados | [python.org/downloads](https://www.python.org/downloads/) |
+| **Git** | 2.30+ | Clonagem do repositório | [git-scm.com](https://git-scm.com/) |
+| **Docker + Docker Compose** | 24.x / v2.x | Broker MQTT (Mosquitto), banco de dados (PostgreSQL) e backend em contêineres | [docs.docker.com/get-docker](https://docs.docker.com/get-docker/) |
+
+> **Opcional:** Para integração com Google Sheets, é necessária uma conta Google Cloud com as APIs do Sheets e Drive habilitadas e um arquivo `google-credentials.json` de Service Account.
+
+### 1.3 Requisitos de Infraestrutura de Rede
+
+| Recurso | Detalhes |
+| :--- | :--- |
+| **Rede Wi-Fi 2.4 GHz** | As bancadas se conectam ao broker MQTT via Wi-Fi. A rede deve estar acessível no chão de fábrica. |
+| **Computador com porta USB** | Para conexão da Central Gateway via cabo USB e execução do Painel Serial CLI / Docker. |
+
+---
+
+## 2. Arquitetura Integral do Sistema
 
 A arquitetura do **EdgeBench** é estruturada em três camadas integradas, segregando claramente as responsabilidades de hardware, firmware de tempo real, comunicação por radiofrequência e serviços de dados na nuvem/servidor.
 
-### 1.1 Diagrama Geral de Arquitetura
+### 2.1 Diagrama Geral de Arquitetura
 
 ```mermaid
 flowchart TB
@@ -123,11 +160,11 @@ flowchart TB
 
 ---
 
-## 2. Componentes de Hardware e Pinagem
+## 3. Componentes de Hardware e Pinagem
 
-O projeto adota o kit **Heltec WiFi LoRa 32 V3** (baseado no SoC **ESP32-S3FN8**), integrando microcontrolador dual-core, conectividade Wi-Fi, rádio LoRa de longo alcance e suporte a periféricos industriais.
+O projeto adota o kit **Heltec WiFi LoRa 32 V3**, integrando microcontrolador dual-core, conectividade Wi-Fi, rádio LoRa de longo alcance e suporte a periféricos industriais.
 
-### 2.1 Mapeamento de Pinos da Bancada (Nó de Borda)
+### 3.1 Mapeamento de Pinos da Bancada (Nó de Borda)
 
 | Periférico / Função | Pino no ESP32-S3 | Modo / Nível Lógico | Descrição Técnica |
 | :--- | :---: | :--- | :--- |
@@ -145,7 +182,9 @@ O projeto adota o kit **Heltec WiFi LoRa 32 V3** (baseado no SoC **ESP32-S3FN8**
 | **LoRa SX1262 DIO1** | **GPIO 14** | Entrada com Interrupção | Interrupção externa disparada ao concluir recepção/transmissão RF. |
 | **LoRa VEXT Control** | **GPIO 36** | Saída Digital (Ativo Baixo) | Chaveamento de alimentação dos periféricos onboard da Heltec. |
 
-### 2.2 Conexão Elétrica do Sensor Fotoelétrico E18-D80NK
+### 3.2 Instruções de Montagem Elétrica — Sensor E18-D80NK
+
+O sensor fotoelétrico E18-D80NK possui **3 fios** que devem ser conectados ao ESP32 da bancada conforme o diagrama abaixo:
 
 ```mermaid
 graph LR
@@ -166,15 +205,23 @@ graph LR
     OUT -->|Pulso Digital 0V / 3.3V| PIN_GPIO48
 ```
 
+**Passo a passo da conexão:**
+
+1. **Fio Marrom (VCC)** → conectar ao pino **5V** (VBUS) da Heltec.
+2. **Fio Azul (GND)** → conectar ao pino **GND** da Heltec.
+3. **Fio Preto (Sinal OUT)** → conectar ao pino **GPIO 48** da Heltec.
+
 > **Nota de Proteção Elétrica:** O sensor E18-D80NK possui saída NPN em coletor aberto. O pull-up interno do ESP32 (`GPIO_PULLUP_ENABLE`) mantém a linha em **3.3V** em repouso. Ao detectar a peça, o transistor interno do sensor conecta o pino ao terra (**0V**), gerando borda de descida perfeitamente segura e imune a sobretensão.
+
+> **Importante:** A Central Gateway **não requer conexão de sensor**. Ela é conectada apenas via cabo USB ao computador e funciona como ponte LoRa ↔ Serial.
 
 ---
 
-## 3. Protocolo de Comunicação LoRa (EdgeBench RF)
+## 4. Protocolo de Comunicação LoRa (EdgeBench RF)
 
 Nas fábricas, quedas de Wi-Fi e panes elétricas podem ocorrer simultaneamente. O **EdgeBench** implementa um protocolo ponto-multiponto determinístico sobre rádio LoRa (915 MHz, SF7, BW 125 kHz, CR 4/5) para diagnóstico, sincronização, reconfiguração remota e telemetria de fallback.
 
-### 3.1 Formato Geral do Pacote
+### 4.1 Formato Geral do Pacote
 
 Todos os pacotes LoRa possuem o byte identificador do projeto `0xEB` no cabeçalho:
 
@@ -182,7 +229,7 @@ Todos os pacotes LoRa possuem o byte identificador do projeto `0xEB` no cabeçal
 | :---: | :---: | :--- |
 | `0xEB` *(Identificador)* | `Msg Type` *(Opcode)* | *Payload específico do comando/resposta* |
 
-### 3.2 Tabela de Opcodes e Estrutura dos Pacotes
+### 4.2 Tabela de Opcodes e Estrutura dos Pacotes
 
 | Opcode | Mnemônico | Direção | Descrição / Payload |
 | :---: | :--- | :---: | :--- |
@@ -202,7 +249,7 @@ Todos os pacotes LoRa possuem o byte identificador do projeto `0xEB` no cabeçal
 
 * **Token de Segurança:** Comandos críticos exigem o token `0xABCD1234` para rejeitar pacotes espúrios ou ruídos de RF.
 
-### 3.3 Regras de Endereçamento e Prevenção de Colisão
+### 4.3 Regras de Endereçamento e Prevenção de Colisão
 
 1. **Broadcast (`FF:FF:FF:FF:FF:FF`):** Utilizado para sincronização de horário (`RESP_TIME`), credenciais Wi-Fi globais (`RESP_CONFIG`) e descoberta (`CMD_PING`).
 2. **Proteção Rigorosa de Setup (`ID == 0`):** Uma bancada recém-gravada inicia com ID `0` (*Não Configurada*). Para evitar que duas placas novas recebam o mesmo ID acidentalmente por broadcast, **uma bancada com ID 0 rejeita expressamente broadcasts de configuração** (`CMD_SET_BENCH`). Ela exige que o comando contenha seu endereço MAC individual específico.
@@ -210,31 +257,31 @@ Todos os pacotes LoRa possuem o byte identificador do projeto `0xEB` no cabeçal
 
 ---
 
-## 4. Recursos de Firmware e Usabilidade em Campo
+## 5. Recursos de Firmware e Usabilidade em Campo
 
-### 4.1 Botão Físico Multifunção (PRG - GPIO 0)
+### 5.1 Botão Físico Multifunção (PRG - GPIO 0)
 Permite comissionar e configurar bancadas no chão de fábrica sem computador ou cabo USB:
 * **Toque Curto (< 1.5s):** A bancada transmite `REQ_TIME` e `REQ_CONFIG` via LoRa, solicitando imediatamente horário e credenciais da rede para a Central.
 * **Toque Longo (> 3s):** A bancada entra em modo de pareamento e emite `ANNOUNCE_PAIRING` (0x33). O operador na estação central vê o MAC e o ID no menu interativo do CLI e define o novo ID numerico da bancada na hora.
 
-### 4.2 Feedback Visual Não-Bloqueante (LED - GPIO 35)
-* **Passagem de Peça:** Dispara um pulso luminoso de **80 ms** acionado via `esp_timer` no Core 1, dando certeza ao operador de que o sensor registrou a contagem.
+### 5.2 Feedback Visual Não-Bloqueante (LED - GPIO 35)
+* **Passagem de Peça:** Dispara um pulso luminoso de **80 ms** acionado via `esp_timer` no Core 1.
 * **Ping Broadcast:** Pisca por **150 ms** indicando que a placa recebeu a sondagem de rádio da Central.
 
-### 4.3 Debounce Dinâmico em Memória Não-Volátil (NVS)
+### 5.3 Debounce Dinâmico em Memória Não-Volátil (NVS)
 O tempo de debounce do sensor óptico pode ser ajustado de **10 ms a 5000 ms** remotamente via LoRa (`CMD_SET_DEBOUNCE`), sem necessidade de recompilar ou reiniciar o firmware. O novo valor é aplicado dinamicamente na ISR e gravado na NVS.
 
-### 4.4 Atualização Remota de Firmware (OTA)
+### 5.4 Atualização Remota de Firmware (OTA)
 O particionamento da Flash conta com duas áreas de aplicação (`ota_0` e `ota_1`) de 1.5 MB cada e controle de rollback automático. O processo pode ser disparado tanto por comando LoRa (`CMD_OTA`) quanto pelo tópico MQTT `fabrica/bancada_<id>/ota`, realizando o download HTTP com validação SHA-256 e confirmação de inicialização bem-sucedida.
 
 ---
 
-## 5. Estrutura e Organização do Repositório
+## 6. Estrutura e Organização do Repositório
 
 ```
 EdgeBench/
 ├── README.md                                  # Guia mestre de arquitetura, protocolo e instruções (este documento)
-├── LICENSE                                    # Licença de uso do código-fonte
+├── LICENSE                                    # Licença MIT
 ├── firmware/                                  # Firmware do Nó de Borda Fabril (ESP32-S3 de Bancada)
 │   ├── CMakeLists.txt                         # Script de compilação do projeto da bancada
 │   ├── partitions.csv                         # Particionamento: nvs, otadata, ota_0, ota_1, storage (LittleFS)
@@ -252,7 +299,7 @@ EdgeBench/
 │       └── Kconfig.projbuild                  # Configurações padrão via menuconfig
 ├── firmware_central/                          # Firmware do Gateway Central Mestre USB (ESP32-S3)
 │   ├── CMakeLists.txt                         # Script de compilação do Gateway Central
-│   ├── partitions.csv                         # Particionamento da Flash da Central
+│   ├── sdkconfig.defaults                     # Configurações mínimas do SDK da Central
 │   └── main/
 │       ├── main.c                             # Ponto de entrada da Central
 │       ├── lora_transmitter.c/.h              # Transmissor e receptor contínuo LoRa SX1262
@@ -262,13 +309,19 @@ EdgeBench/
 │   ├── uart_serial.py                         # Painel interativo CLI (Ping Broadcast, Pareamento, OTA Server)
 │   ├── main.py                                # Ponto de entrada consolidado dos serviços Python
 │   ├── mqtt_listener.py                       # Ingestor MQTT multithread com prevenção de duplicatas
+│   ├── config.py                              # Centralização de configuração via variáveis de ambiente (.env)
 │   ├── database.py / models.py                # Camada ORM (SQLAlchemy) e modelos relacionais
 │   ├── excel_generator.py                     # Geração automatizada de planilhas executivas (.xlsx) por turno
 │   ├── analytics.py                           # Cálculo de indicadores industriais (peças/hora, OEE, paradas)
 │   ├── google_sheets_sync.py                  # Sincronização de apontamentos em nuvem (Google Sheets)
+│   ├── auth_google.py                         # Autenticação OAuth2 / Service Account para APIs Google
 │   ├── scheduler.py                           # Agendador de relatórios e fechamentos de turno fabril
-│   ├── docker-compose.yml                     # Subida rápida de Mosquitto, PostgreSQL e Ingestor
-│   └── Dockerfile                             # Contêiner do backend de dados
+│   ├── requirements.txt                       # Dependências Python do projeto
+│   ├── .env.example                           # Modelo de variáveis de ambiente (copiar para .env)
+│   ├── docker-compose.yml                     # Orquestração: Mosquitto + PostgreSQL + Backend
+│   ├── Dockerfile                             # Contêiner multi-stage do backend de dados
+│   └── mosquitto/
+│       └── mosquitto.conf                     # Configuração do broker Mosquitto (listeners, persistência)
 └── requisitos/
     └── especificacao_tecnica.md               # Especificação aprofundada: RFs, RNFs, análise mecânica e cinemática
 ```
@@ -285,55 +338,166 @@ EdgeBench/
 | **Ponte Serial UART** | [`firmware_central/main/serial_bridge.c`](firmware_central/main/serial_bridge.c) | Tradução bidirecional entre comandos JSON serial e pacotes RF. |
 | **Painel Serial & Driver** | [`app/uart_serial.py`](app/uart_serial.py) | Menu com 11 funções (Ping Broadcast, Pareamento, Servidor HTTP OTA). |
 | **Ingestor de Telemetria** | [`app/mqtt_listener.py`](app/mqtt_listener.py) | Ingestão MQTT com chave única `(bench_id, timestamp)` para idempotência. |
+| **Configuração Centralizada** | [`app/config.py`](app/config.py) | Leitura de variáveis de ambiente (`.env`) com defaults seguros. |
 
 ---
 
-## 6. Guia de Compilação, Gravação e Uso
+## 7. Guia Completo de Instalação, Configuração e Execução
 
-### 6.1 Compilação do Firmware das Bancadas (`firmware`)
+Esta seção detalha **todos os passos necessários** para replicar o ambiente e executar o projeto, partindo de uma máquina limpa.
 
-1. Abra o terminal configurado com o ESP-IDF v5.x (ou PowerShell do ESP-IDF):
-   ```powershell
-   & "C:\Espressif\tools\Microsoft.v5.5.5.PowerShell_profile.ps1"
-   ```
-2. Navegue até o diretório do firmware e compile:
-   ```bash
-   cd firmware
-   idf.py set-target esp32s3
-   idf.py build
-   ```
-3. Conecte a placa da bancada via USB e grave:
-   ```bash
-   idf.py -p COM_PORT flash monitor
-   ```
-
-### 6.2 Compilação do Firmware da Central Gateway (`firmware_central`)
-
-1. No mesmo ambiente ESP-IDF:
-   ```bash
-   cd firmware_central
-   idf.py set-target esp32s3
-   idf.py build
-   ```
-2. Conecte o ESP32 da Central via USB e grave:
-   ```bash
-   idf.py -p COM_PORT flash monitor
-   ```
-
-### 6.3 Utilização do Painel Serial CLI (`app/uart_serial.py`)
-
-Com o ESP32 Central conectado na USB do computador:
+### 7.1 Clonar o Repositório
 
 ```bash
+git clone https://github.com/rodrigop07/EdgeBench.git EdgeBench
+cd EdgeBench
+```
+
+### 7.2 Instalar o ESP-IDF (Toolchain de Firmware)
+
+O ESP-IDF é necessário para compilar e gravar os firmwares da bancada e da central.
+
+**Linux / macOS:**
+```bash
+mkdir -p ~/esp
+cd ~/esp
+git clone -b v5.5.5 --recursive https://github.com/espressif/esp-idf.git
+cd esp-idf
+./install.sh esp32s3
+source export.sh
+```
+
+**Windows (PowerShell):**
+
+Baixe e execute o [instalador ESP-IDF](https://dl.espressif.com/dl/esp-idf/) ou use o terminal do ESP-IDF Tools Installer:
+```powershell
+# Após a instalação, abra o "ESP-IDF PowerShell" do menu Iniciar
+# ou carregue manualmente o profile:
+& "C:\Espressif\tools\Microsoft.v5.5.5.PowerShell_profile.ps1"
+```
+
+> **Verificação:** Execute `idf.py --version` e confirme que a versão exibida é `v5.5.x`.
+
+### 7.3 Compilar e Gravar o Firmware da Bancada (`firmware/`)
+
+1. Conecte a placa Heltec da **bancada** ao computador via cabo USB-C.
+2. Identifique a porta serial: `COM3` (Windows), `/dev/ttyUSB0` ou `/dev/ttyACM0` (Linux/macOS).
+
+```bash
+cd firmware
+idf.py set-target esp32s3
+idf.py build
+idf.py -p <PORTA_SERIAL> flash monitor
+```
+
+> Substitua `<PORTA_SERIAL>` pela porta identificada (ex: `COM3`, `/dev/ttyACM0`).
+
+**Saída esperada no monitor serial (boot bem-sucedido):**
+```
+I (xxx) APP_MAIN: [APP] Startup..
+I (xxx) APP_MAIN: [APP] Memoria livre: 2XXXXX bytes
+I (xxx) APP_MAIN: [APP] IDF Versao: v5.5.5
+I (xxx) APP_MAIN: Boot count atual: 1
+W (xxx) APP_MAIN: ATENCAO: ID da Bancada NAO CONFIGURADO, aguardando pareamento ou configuracao via LoRa.
+I (xxx) LORA_RCV: Rádio LoRa SX1262 inicializado com sucesso em 915 MHz
+I (xxx) APP_MAIN: SNTP inicializado em background (servidor: a.st1.ntp.br, fuso: UTC-3)
+```
+
+> **Nota:** Na primeira gravação, a bancada inicia com ID `0` (não configurada) e sem credenciais Wi-Fi. Isso é normal — a configuração será feita via LoRa no passo 7.7.
+
+### 7.4 Compilar e Gravar o Firmware da Central Gateway (`firmware_central/`)
+
+1. **Desconecte** a bancada e conecte a placa Heltec da **Central Gateway** via USB-C.
+
+```bash
+cd firmware_central
+idf.py set-target esp32s3
+idf.py build
+idf.py -p <PORTA_SERIAL> flash monitor
+```
+
+**Saída esperada no monitor serial (boot bem-sucedido):**
+```
+I (xxx) GATEWAY_CENTRAL: =================================================
+I (xxx) GATEWAY_CENTRAL:    EdgeBench - ESP32S3 LoRa USB Central
+I (xxx) GATEWAY_CENTRAL: =================================================
+I (xxx) GATEWAY_CENTRAL: Gateway Central pronto em modo servidor sob demanda (RX padrao, TX em respostas)
+```
+
+> Após gravar, **mantenha a Central conectada via USB** ao computador. Ela será controlada pelo Painel Serial CLI.
+
+### 7.5 Configurar e Iniciar os Serviços de Backend (Docker Compose)
+
+O backend (Broker MQTT, Banco de Dados e Ingestor Python) roda em contêineres Docker.
+
+**1. Crie o arquivo de variáveis de ambiente:**
+```bash
+cd app
+cp .env.example .env
+```
+
+**2. (Opcional) Edite o `.env` conforme seu ambiente:**
+```dotenv
+# As variáveis principais e seus valores padrão:
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=edgebench
+POSTGRES_USER=edgebench_user
+POSTGRES_PASSWORD=edgebench_pass
+
+MQTT_HOST=localhost
+MQTT_PORT=1883
+MQTT_TOPIC_FILTER=fabrica/bancada_+/producao
+```
+
+**3. Inicie todos os serviços:**
+```bash
+docker-compose up -d
+```
+
+**4. Verifique que os três contêineres estão saudáveis:**
+```bash
+docker-compose ps
+```
+
+**Saída esperada:**
+```
+NAME                  STATUS
+edgebench_mosquitto   Up (healthy)
+edgebench_postgres    Up (healthy)
+edgebench_backend     Up
+```
+
+> **Nota:** O broker MQTT Mosquitto é iniciado automaticamente pelo Docker Compose e estará disponível na porta `1883`. As bancadas precisam do IP desta máquina como URL do broker (ex: `mqtt://192.168.1.100:1883`).
+
+### 7.6 Iniciar o Painel Serial CLI (`app/uart_serial.py`)
+
+O Painel Serial é a ferramenta de linha de comando que controla a Central Gateway para configuração das bancadas.
+
+**1. Crie e ative um ambiente virtual Python:**
+
+*Linux/macOS:*
+```bash
+cd app
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+*Windows (PowerShell):*
+```powershell
 cd app
 python -m venv venv
-.\venv\Scripts\activate
+.\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+```
+
+**2. Execute o painel (com a Central Gateway conectada via USB):**
+```bash
 python uart_serial.py
 ```
 
-O menu interativo será exibido no terminal:
-
+**Saída esperada (menu interativo):**
 ```
 ============================================================
     EdgeBench - Painel Serial Central
@@ -354,22 +518,109 @@ Selecione uma operacao:
   [0] Sair
 ```
 
-* **Opção [2] (Ping Broadcast):** A Central envia o comando `0x70` via rádio; todas as bancadas no raio de alcance piscam o LED, aguardam o jitter anti-colisão e respondem. O script exibe a tabela em tempo real com o status de cada nó.
-* **Opção [9] (Modo Pareamento Rápido):** Coloca a Central em escuta. Basta pressionar o botão PRG da bancada por 3 segundos para que o computador detecte a placa e permita definir seu novo ID na hora.
-* **Opção [10] (OTA):** Inicia um servidor HTTP local temporário na máquina e comanda as bancadas via rádio ou MQTT para baixarem o binário compilado.
+### 7.7 Fluxo Completo: Da Primeira Gravação ao Primeiro Registro
 
-### 6.4 Inicialização dos Serviços de Backend (Docker Compose)
+Após gravar ambos os firmwares e iniciar os serviços, siga este roteiro para comissionar a primeira bancada:
 
-Para rodar o Broker Mosquitto e a stack analítica com banco de dados em contêineres:
-
-```bash
-cd app
-docker-compose up -d
+```mermaid
+flowchart LR
+    A["1. Energizar\nbancada"] --> B["2. Ping Broadcast\n(Opção 2 do CLI)"]
+    B --> C["3. Bancada responde\ncom MAC e ID=0"]
+    C --> D["4. Pareamento\n(Opção 9 do CLI +\nbotão 3s na bancada)"]
+    D --> E["5. Definir ID\n(ex: ID=1)"]
+    E --> F["6. Enviar Wi-Fi\n(Opção 4 do CLI)"]
+    F --> G["7. Enviar Broker\n(Opção 5 do CLI)"]
+    G --> H["8. Sync Horário\n(Opção 3 do CLI)"]
+    H --> I["9. Bancada conecta\nao Wi-Fi e MQTT"]
+    I --> J["10. Peça na calha\n→ LED pisca\n→ Registro publicado"]
 ```
+
+**Passo a passo detalhado:**
+
+| Passo | Ação | Comando/Procedimento |
+| :---: | :--- | :--- |
+| 1 | Energizar a bancada | Conecte via USB ou fonte 5V. O LED piscará 1× no boot. |
+| 2 | Verificar que a bancada está no ar | No CLI, selecione **[2] Ping Broadcast**. Todas as bancadas ao alcance respondem. |
+| 3 | Identificar a bancada nova | A bancada aparecerá com **ID = 0** (não configurada) e seu MAC. |
+| 4 | Parear a bancada | No CLI, selecione **[9] Modo de Pareamento**. Na bancada, **segure o botão PRG por 3 segundos**. O CLI detecta o anúncio. |
+| 5 | Atribuir um ID numérico | O CLI solicita o novo ID. Digite um número único (ex: `1`). |
+| 6 | Enviar credenciais Wi-Fi | Selecione **[4]** e informe o SSID e a senha da rede Wi-Fi da fábrica. |
+| 7 | Enviar URL do Broker MQTT | Selecione **[5]** e informe o endereço do broker (ex: `mqtt://192.168.1.100:1883`). |
+| 8 | Sincronizar horário | Selecione **[3]** para emitir um beacon de horário via LoRa. |
+| 9 | Aguardar conexão | A bancada se conecta automaticamente ao Wi-Fi e ao broker MQTT. |
+| 10 | Testar detecção | Passe um objeto pela frente do sensor. O LED pisca e o registro é publicado no tópico `fabrica/bancada_1/producao`. |
 
 ---
 
-## 7. Principais Diferenciais de Engenharia
+## 8. Verificação da Execução — Resultados Esperados
+
+Esta seção documenta as **saídas que confirmam o funcionamento correto** de cada componente do sistema.
+
+### 8.1 Monitor Serial da Bancada (Detecção de Peça)
+
+Ao passar uma peça pela frente do sensor após o comissionamento completo:
+
+```
+[ISR] Interrupcao detectada no GPIO 48 (Sensor E18-D80NK)!
+I (xxxxx) SENSOR_MGR: Detecção no Core 1 - Total acumulado: 1 peças
+I (xxxxx) MQTT_MGR: Mensagem publicada em 'fabrica/bancada_1/producao' (QoS 1, id: xxxxx, offline: false)
+I (xxxxx) MQTT_MGR: MQTT_EVENT_PUBLISHED (PUBACK recebido), msg_id=xxxxx
+```
+
+### 8.2 Monitor Serial da Central (Recepção LoRa)
+
+Ao receber um pacote de telemetria LoRa de uma bancada offline:
+
+```
+I (xxxxx) LORA_TX: [RX] Pacote recebido (22 bytes, RSSI: -xx dBm)
+I (xxxxx) LORA_TX: [TELEMETRIA] Bancada 1 | Contagem: 5 | Timestamp: 1726435200
+```
+
+### 8.3 Teste MQTT via Linha de Comando
+
+Para verificar que o broker está recebendo publicações das bancadas:
+
+```bash
+# Em um terminal separado, inscreva-se em todos os tópicos das bancadas:
+mosquitto_sub -h localhost -p 1883 -t "fabrica/bancada_+/producao" -v
+```
+
+**Saída esperada ao detectar uma peça:**
+```
+fabrica/bancada_1/producao {"bench_id":1,"count":1,"timestamp":1726435200,"source":"wifi"}
+```
+
+### 8.4 Logs do Backend Python (Docker)
+
+Para verificar que o ingestor MQTT está recebendo e persistindo registros:
+
+```bash
+docker-compose logs -f backend
+```
+
+**Saída esperada:**
+```
+2026-09-16T08:00:00 [INFO    ] edgebench.mqtt — Conectado ao broker mosquitto:1883
+2026-09-16T08:00:00 [INFO    ] edgebench.mqtt — Inscrito em 'fabrica/bancada_+/producao' (QoS 1)
+2026-09-16T08:01:23 [INFO    ] edgebench.mqtt — Registro persistido: bench_id=1, count=1, ts=2026-09-16T08:01:23
+```
+
+### 8.5 Geração de Relatório Excel (Sob Demanda)
+
+```bash
+docker-compose run --rm backend python main.py --export --bancada 1
+```
+
+**Saída esperada:**
+```
+2026-09-16T08:05:00 [INFO    ] edgebench.excel — Relatório gerado: reports/bancada_1_2026-09-16.xlsx
+```
+
+O arquivo `.xlsx` estará disponível na pasta `app/reports/`.
+
+---
+
+## 9. Principais Diferenciais de Engenharia
 
 1. **Salvamento Local (Offline-First):** Em caso de falha de infraestrutura de rede, o nó armazena os registros em memória Flash não volátil com particionamento LittleFS e proteção contra desligamentos abruptos de energia.
 2. **Buffer Binário de Alta Densidade (8 Bytes):** Cada registro de produção consome apenas 8 bytes (`count` + `timestamp`), comportando mais de **131.000 eventos** em apenas 1 MB de Flash (mais de **90 dias de autonomia** contínua sem Wi-Fi).
@@ -381,8 +632,14 @@ docker-compose up -d
 
 ---
 
-## 8. Documentação Complementar
+## 10. Documentação Complementar
 
 Para consultar os requisitos detalhados de engenharia, especificações funcionais e não-funcionais (RFs/RNFs), análise cinemática da rampa de peças e comparativo técnico entre IoT e Visão Computacional, consulte:
 
 📄 **[especificacao_tecnica.md](requisitos/especificacao_tecnica.md)**
+
+---
+
+## Licença
+
+Este projeto é licenciado sob a **Licença MIT** — consulte o arquivo [`LICENSE`](LICENSE) para mais detalhes.
