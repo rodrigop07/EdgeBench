@@ -496,6 +496,22 @@ class EdgeBenchGateway:
             )
         return self.send_command(payload)
 
+    def reboot_bench(
+        self, target_bench_id: int = 0, target_mac: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        # emite comando via rádio LoRa para reiniciar remotamente o ESP32 da bancada
+        payload = {"cmd": "reboot", "target_id": target_bench_id}
+        if target_mac:
+            payload["mac"] = target_mac
+            logger.info(
+                f"Disparando comando LoRa direcionado (Alvo ID: {target_bench_id}, MAC: {target_mac}) para REBOOT do ESP32..."
+            )
+        else:
+            logger.info(
+                f"Disparando comando LoRa (Alvo ID: {target_bench_id or 'Todas'}) para REBOOT do ESP32..."
+            )
+        return self.send_command(payload)
+
     def publish_ota_mqtt(
         self,
         url: str,
@@ -640,6 +656,7 @@ def interactive_menu(port: Optional[str] = None):
             print("  [9] Modo de Pareamento Rápido (Aguardando botão físico da bancada...)")
             print("  [10] Gerenciar Atualização OTA de Firmware (Servidor Local / LoRa / MQTT)")
             print("  [11] Reconfigurar Tempo de Debounce do Sensor via LoRa")
+            print("  [12] Reiniciar ESP32 de Bancada remotamente via LoRa (Reboot)")
             print("  [0] Sair")
 
             choice = input("\nOpcao: ").strip()
@@ -814,6 +831,18 @@ def interactive_menu(port: Optional[str] = None):
                         print(f"-> Resposta: {res}")
                 else:
                     print("[ERRO] Valor numérico inválido")
+            elif choice == "12":
+                target_str = input(
+                    "Digite o ID da bancada a reiniciar (1 a 65535, ou 0 para TODAS) [0]: "
+                ).strip()
+                tid = int(target_str) if target_str.isdigit() else 0
+                mac_str = input("Digite o MAC do ESP32 alvo (opcional, Enter para pular): ").strip()
+                confirm = input(f"Confirma envio de comando REBOOT para bancada(s) (Alvo ID: {tid or 'Todas'})? [s/N]: ").strip().lower()
+                if confirm == "s":
+                    res = gw.reboot_bench(target_bench_id=tid, target_mac=mac_str if mac_str else None)
+                    print(f"-> Resposta: {res}")
+                else:
+                    print("Operação cancelada")
             elif choice == "0":
                 print("Encerrando...")
                 break

@@ -246,6 +246,30 @@ static void process_json_command(const char *line) {
         } else {
             send_json_status("pong", "gateway_online");
         }
+    } else if (strcmp(cmd, "reboot") == 0 || strcmp(cmd, "reset_node") == 0) {
+        cJSON *target_item = cJSON_GetObjectItem(root, "target_id");
+        uint16_t target_id = target_item ? (uint16_t)target_item->valueint : 0;
+
+        uint8_t target_mac[6];
+        uint8_t *mac_ptr = NULL;
+        cJSON *mac_item = cJSON_GetObjectItem(root, "mac");
+        if (cJSON_IsString(mac_item) && mac_item->valuestring != NULL) {
+            unsigned int m[6];
+            if (sscanf(mac_item->valuestring, "%02x:%02x:%02x:%02x:%02x:%02x",
+                       &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) == 6 ||
+                sscanf(mac_item->valuestring, "%02X:%02X:%02X:%02X:%02X:%02X",
+                       &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) == 6) {
+                for (int i = 0; i < 6; i++) target_mac[i] = (uint8_t)m[i];
+                mac_ptr = target_mac;
+            }
+        }
+
+        esp_err_t err = lora_send_cmd_reboot(mac_ptr, target_id);
+        if (err == ESP_OK) {
+            send_json_status("ok", "reboot_cmd_transmitted");
+        } else {
+            send_json_status("error", "lora_tx_failed");
+        }
     } else {
         ESP_LOGW(TAG, "Comando desconhecido: %s", cmd);
         send_json_status("error", "unknown_cmd");

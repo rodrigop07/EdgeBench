@@ -25,6 +25,7 @@
 #define LORA_MSG_CMD_SET_DEBOUNCE 0x60 // Central -> Nó: configura tempo de debounce em ms
 #define LORA_MSG_CMD_PING 0x70         // Central -> Broadcast: ping para todos os nós
 #define LORA_MSG_RESP_PONG 0x71        // Nó -> Central: resposta pong contendo MAC e ID de bancada
+#define LORA_MSG_CMD_REBOOT 0x80       // Central -> Nó: reinicialização remota do ESP32
 
 // token de segurança para autorizar comandos críticos
 #define LORA_SECURITY_TOKEN 0xABCD1234

@@ -232,22 +232,18 @@ esp_err_t nvs_manager_get_bench_id(uint16_t *bench_id) {
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Erro ao abrir NVS para ler bench_id (%s)", esp_err_to_name(err));
-        *bench_id = (uint16_t)CONFIG_BENCH_ID;
+        *bench_id = BENCH_ID_UNCONFIGURED;
         return err;
     }
 
     uint16_t id = 0;
     err = nvs_get_u16(handle, "bench_id", &id);
     if (err != ESP_OK || id > 9999) {
-        id = (uint16_t)CONFIG_BENCH_ID;
+        id = BENCH_ID_UNCONFIGURED;
         if (err == ESP_ERR_NVS_NOT_FOUND) {
-            if (id == BENCH_ID_UNCONFIGURED) {
-                ESP_LOGW(TAG, "bench_id não encontrado na NVS, bancada inicializada como NAO CONFIGURADA (ID: %u)", id);
-            } else {
-                ESP_LOGW(TAG, "bench_id não encontrado na NVS, usando valor padrão: %u", id);
-            }
+            ESP_LOGW(TAG, "bench_id não encontrado na NVS, bancada inicializada como NAO CONFIGURADA (ID: %u)", id);
         } else {
-            ESP_LOGW(TAG, "Valor de 'bench_id' na NVS inválido ou erro (%s, lido=%u). Resetando para padrão: %u",
+            ESP_LOGW(TAG, "Valor de 'bench_id' na NVS inválido ou erro (%s, lido=%u). Resetando para NAO CONFIGURADA (ID: %u)",
                      esp_err_to_name(err), id, id);
         }
         nvs_erase_key(handle, "bench_id");
@@ -377,9 +373,10 @@ esp_err_t nvs_manager_factory_reset(void) {
     // apaga todas as chaves gravadas no namespace "config" (wifi_ssid, wifi_pass, broker_url, bench_id, etc)
     err = nvs_erase_all(handle);
     if (err == ESP_OK) {
-        // grava a remoção na memória flash física
+        // grava bench_id = BENCH_ID_UNCONFIGURED (0)
+        nvs_set_u16(handle, "bench_id", BENCH_ID_UNCONFIGURED);
         nvs_commit(handle);
-        ESP_LOGI(TAG, "Factory Reset concluido, todas as configuracoes foram apagadas");
+        ESP_LOGI(TAG, "Factory Reset concluido: todas as configuracoes foram apagadas e bench_id resetado para 0 (NAO CONFIGURADA)");
     } else {
         ESP_LOGE(TAG, "Falha ao apagar chaves da NVS (%s)", esp_err_to_name(err));
     }

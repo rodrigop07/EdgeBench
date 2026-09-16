@@ -374,6 +374,38 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
         memcpy(&resp[2], s_my_mac, 6);
         memcpy(&resp[8], &my_id, sizeof(uint16_t));
         lora_send_packet(resp, sizeof(resp));
+    } else if (msg_type == LORA_MSG_CMD_REBOOT) {
+        // formato: [0xEB, 0x80, TARGET_MAC(6B), TARGET_BENCH_ID(2B), TOKEN(4B)] = 14 bytes
+        if (length < 14) {
+            ESP_LOGW(TAG, "Pacote CMD_REBOOT com tamanho insuficiente (%d bytes)", (int)length);
+            return;
+        }
+
+        uint32_t token = 0;
+        memcpy(&token, &payload[10], sizeof(uint32_t));
+        if (token != LORA_SECURITY_TOKEN) {
+            ESP_LOGW(TAG, "CMD_REBOOT rejeitado: Token invalido (0x%08lX)", (unsigned long)token);
+            return;
+        }
+
+        uint16_t current_bench_id = 0;
+        nvs_manager_get_bench_id(&current_bench_id);
+
+        uint16_t target_bench_id = 0;
+        memcpy(&target_bench_id, &payload[8], sizeof(uint16_t));
+
+        bool mac_matches = is_target_mac_me(&payload[2]);
+        bool bench_matches = (target_bench_id == 0 || target_bench_id == current_bench_id);
+
+        if (!mac_matches || !bench_matches) {
+            ESP_LOGD(TAG, "CMD_REBOOT ignorado: nao coincide com este no (Meu ID: %u, Alvo ID: %u)",
+                     current_bench_id, target_bench_id);
+            return;
+        }
+
+        ESP_LOGW(TAG, "Comando CMD_REBOOT recebido via LoRa, reiniciando ESP32 em 1 segundo...");
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        esp_restart();
     } else {
         ESP_LOGD(TAG, "Tipo de mensagem LoRa desconhecido ou ignorado (0x%02X)", msg_type);
     }
