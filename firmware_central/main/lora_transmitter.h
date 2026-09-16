@@ -23,6 +23,8 @@
 #define LORA_MSG_CMD_OTA 0x40          // Central -> Nó: comanda início de atualização OTA
 #define LORA_MSG_TELEMETRY 0x50        // Nó -> Central: fallback de telemetria (offline)
 #define LORA_MSG_CMD_SET_DEBOUNCE 0x60 // Central -> Nó: configura tempo de debounce em ms
+#define LORA_MSG_CMD_PING 0x70         // Central -> Broadcast: ping para todos os nós
+#define LORA_MSG_RESP_PONG 0x71        // Nó -> Central: resposta pong contendo MAC e ID de bancada
 
 // token de segurança para comandos críticos
 #define LORA_SECURITY_TOKEN 0xABCD1234
@@ -84,5 +86,10 @@ esp_err_t lora_send_cmd_ota(uint16_t target_bench_id, const char *url);
  * @brief envia comando para reconfigurar o tempo de debounce do sensor via LoRa
  */
 esp_err_t lora_send_cmd_set_debounce(const uint8_t target_mac[6], uint16_t target_bench_id, uint32_t debounce_ms);
+
+/**
+ * @brief envia comando de ping em broadcast para descobrir todas as bancadas no alcance LoRa
+ */
+esp_err_t lora_send_ping_broadcast(void);
 
 #endif /* LORA_TRANSMITTER_H */

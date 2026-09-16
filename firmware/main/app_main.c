@@ -63,9 +63,13 @@ void app_main(void) {
     ESP_LOGI(TAG, "Boot count atual: %" PRIu32, boot_count);
 
     // lê e exibe o identificador da bancada
-    uint16_t bench_id = 1;
+    uint16_t bench_id = BENCH_ID_UNCONFIGURED;
     nvs_manager_get_bench_id(&bench_id);
-    ESP_LOGI(TAG, "ID da Bancada (EdgeBench): %u", bench_id);
+    if (bench_id == BENCH_ID_UNCONFIGURED) {
+        ESP_LOGW(TAG, "ATENCAO: ID da Bancada NAO CONFIGURADO, aguardando pareamento ou configuracao via LoRa.");
+    } else {
+        ESP_LOGI(TAG, "ID da Bancada (EdgeBench): %u", bench_id);
+    }
 
     // inicializa o rádio LoRa (SX1262) e sua tarefa de escuta no Core 0
     ESP_ERROR_CHECK(lora_receiver_init());

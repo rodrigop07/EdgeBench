@@ -354,9 +354,45 @@ class EdgeBenchGateway:
     # comandos específicos do EdgeBench
 
     def ping(self) -> Optional[Dict[str, Any]]:
-        # testa se o ESP32 está online
-        logger.info("Enviando comando PING")
+        # testa se o ESP32 Gateway está online
+        logger.info("Enviando comando PING (Gateway Local)")
         return self.send_command({"cmd": "ping"})
+
+    def ping_broadcast(self, wait_seconds: float = 3.5) -> List[Dict[str, Any]]:
+        """
+        Dispara comando de Ping em Broadcast via rádio LoRa para todas as bancadas no alcance.
+        Coleta respostas PONG durante 'wait_seconds' e retorna lista com as bancadas encontradas.
+        """
+        logger.info("Disparando PING Broadcast via LoRa...")
+        resp = self.send_command({"cmd": "ping_broadcast"})
+        if not resp or resp.get("status") != "ok":
+            logger.error(f"Falha ao enviar comando ping_broadcast: {resp}")
+            return []
+
+        nodes = []
+        seen_macs = set()
+        start_t = time.time()
+        while (time.time() - start_t) < wait_seconds:
+            with self._rx_lock:
+                if self.ser and self.ser.in_waiting > 0:
+                    line = self.ser.readline().decode("utf-8", errors="ignore").strip()
+                else:
+                    line = None
+                if line and line.startswith("{") and '"msg":"pong"' in line:
+                    try:
+                        data = json.loads(line)
+                        mac = data.get("mac")
+                        if mac and mac not in seen_macs:
+                            seen_macs.add(mac)
+                            nodes.append(data)
+                            logger.info(f"Resposta PONG -> Bancada ID: {data.get('bench_id')}, MAC: {mac}")
+                    except Exception:
+                        pass
+                elif line:
+                    logger.debug(f"[ESP32] {line}")
+            time.sleep(0.04)
+
+        return nodes
 
     def sync_time(self, timestamp: Optional[int] = None) -> Optional[Dict[str, Any]]:
         # sincroniza o relógio do ESP32 com o timestamp Epoch Unix informado
@@ -555,16 +591,17 @@ def interactive_menu(port: Optional[str] = None):
     try:
         while True:
             print("\nSelecione uma operacao:")
-            print("  [1] Testar conexao (Ping)")
-            print("  [2] Sincronizar Horario do PC (Emitir Beacon de Horario)")
-            print("  [3] Reconfigurar Wi-Fi das bancadas via LoRa")
-            print("  [4] Reconfigurar Broker MQTT das bancadas via LoRa")
-            print("  [5] Reconfigurar ID de Bancada via LoRa (identificando pelo ID atual)")
-            print("  [6] Consultar MAC de uma Bancada via LoRa")
-            print("  [7] Monitorar logs contínuos da Serial")
-            print("  [8] Modo de Pareamento Rápido (Aguardando botão físico da bancada...)")
-            print("  [9] Gerenciar Atualização OTA de Firmware (Servidor Local / LoRa / MQTT)")
-            print("  [10] Reconfigurar Tempo de Debounce do Sensor via LoRa")
+            print("  [1] Testar conexao com Gateway (Ping local)")
+            print("  [2] Ping Broadcast LoRa (Descobrir todas as bancadas online: MAC e ID)")
+            print("  [3] Sincronizar Horario do PC (Emitir Beacon de Horario)")
+            print("  [4] Reconfigurar Wi-Fi das bancadas via LoRa")
+            print("  [5] Reconfigurar Broker MQTT das bancadas via LoRa")
+            print("  [6] Reconfigurar ID de Bancada via LoRa (identificando pelo ID atual)")
+            print("  [7] Consultar MAC de uma Bancada via LoRa")
+            print("  [8] Monitorar logs contínuos da Serial")
+            print("  [9] Modo de Pareamento Rápido (Aguardando botão físico da bancada...)")
+            print("  [10] Gerenciar Atualização OTA de Firmware (Servidor Local / LoRa / MQTT)")
+            print("  [11] Reconfigurar Tempo de Debounce do Sensor via LoRa")
             print("  [0] Sair")
 
             choice = input("\nOpcao: ").strip()
@@ -573,15 +610,32 @@ def interactive_menu(port: Optional[str] = None):
                 res = gw.ping()
                 print(f"-> Resposta: {res}")
             elif choice == "2":
+                print("\n[INFO] Disparando Ping Broadcast via LoRa... Aguardando respostas das bancadas (3.5s)...")
+                nodes = gw.ping_broadcast(wait_seconds=3.5)
+                print("\n" + "=" * 65)
+                print(f" RESUMO DA REDE LORA ({len(nodes)} bancada(s) detectada(s)):")
+                print("=" * 65)
+                if nodes:
+                    print(f"{'Bancada ID':<14} | {'Endereço MAC':<20} | {'Status'}")
+                    print("-" * 65)
+                    for n in nodes:
+                        b_id = n.get("bench_id", 0)
+                        mac = n.get("mac", "N/A")
+                        status_str = "Configurada" if b_id > 0 else "NÃO CONFIGURADA (Setup pendente)"
+                        print(f"{b_id:<14} | {mac:<20} | {status_str}")
+                else:
+                    print("  Nenhuma bancada respondeu ao ping no tempo limite.")
+                print("=" * 65 + "\n")
+            elif choice == "3":
                 res = gw.sync_time()
                 print(f"-> Resposta: {res}")
-            elif choice == "3":
+            elif choice == "4":
                 ssid = input("Digite o novo SSID da rede Wi-Fi: ").strip()
                 pwd = input("Digite a nova Senha: ").strip()
                 if ssid:
                     res = gw.set_wifi(ssid, pwd)
                     print(f"-> Resposta: {res}")
-            elif choice == "4":
+            elif choice == "5":
                 local_ip = LocalOTAServer.get_local_ip()
                 default_broker = f"mqtt://{local_ip}:{DEFAULT_MQTT_PORT}"
                 url = input(
@@ -590,17 +644,21 @@ def interactive_menu(port: Optional[str] = None):
                 url = url or default_broker
                 res = gw.set_broker(url)
                 print(f"-> Resposta: {res}")
-            elif choice == "5":
+            elif choice == "6":
                 target_str = input(
                     "Digite o ID ATUAL da bancada que deseja alterar (1 a 65535, ou 0 para qualquer): "
                 ).strip()
                 new_str = input("Digite o NOVO ID da bancada (1 a 65535): ").strip()
                 mac_str = input("Digite o MAC do ESP32 alvo (opcional, Enter para pular): ").strip()
                 if new_str.isdigit():
-                    tid = int(target_str) if target_str.isdigit() else 0
-                    res = gw.set_bench(int(new_str), target_bench_id=tid, target_mac=mac_str if mac_str else None)
-                    print(f"-> Resposta: {res}")
-            elif choice == "6":
+                    new_val = int(new_str)
+                    if new_val < 1:
+                        print("[ERRO] O novo ID da bancada deve ser maior ou igual a 1 (1 a 65535).")
+                    else:
+                        tid = int(target_str) if target_str.isdigit() else 0
+                        res = gw.set_bench(new_val, target_bench_id=tid, target_mac=mac_str if mac_str else None)
+                        print(f"-> Resposta: {res}")
+            elif choice == "7":
                 target_str = input("Digite o ID da bancada a consultar (1 a 65535, ou 0 para todas): ").strip()
                 if target_str.isdigit():
                     res = gw.get_bench_info(int(target_str))
@@ -619,7 +677,7 @@ def interactive_menu(port: Optional[str] = None):
                             elif line:
                                 print(f"[ESP32] {line}")
                         time.sleep(0.05)
-            elif choice == "7":
+            elif choice == "8":
                 print("\n[INFO] Monitorando porta serial... Pressione Ctrl+C para voltar ao menu.")
                 try:
                     while True:
@@ -633,7 +691,7 @@ def interactive_menu(port: Optional[str] = None):
                         time.sleep(0.05)
                 except KeyboardInterrupt:
                     print("\n[INFO] Retornando ao menu")
-            elif choice == "8":
+            elif choice == "9":
                 print("\n" + "=" * 60)
                 print(" [MODO PAREAMENTO] Aguardando acionamento do botão físico (3s)...")
                 print(" Vá até a bancada física e segure o botão PRG por 3 segundos")
@@ -651,19 +709,23 @@ def interactive_menu(port: Optional[str] = None):
                                     pairing_data = json.loads(line)
                                     mac = pairing_data.get("mac")
                                     current_id = pairing_data.get("bench_id")
+                                    id_display = f"{current_id} (Não configurado)" if current_id == 0 else f"{current_id}"
                                     print("\n" + "*" * 60)
                                     print(" [NOVA BANCADA DETECTADA VIA BOTÃO]")
                                     print(f" Endereço MAC : {mac}")
-                                    print(f" ID Atual     : {current_id}")
+                                    print(f" ID Atual     : {id_display}")
                                     print("*" * 60)
                                     new_id_str = input(
                                         f"\nDigite o NOVO ID para esta bancada (Enter para manter {current_id}): "
                                     ).strip()
                                     if new_id_str.isdigit():
                                         new_id = int(new_id_str)
-                                        res = gw.set_bench(new_id, target_bench_id=0, target_mac=mac)
-                                        print(f"-> Resposta da Central: {res}")
-                                        print(f"-> Bancada {mac} configurada com sucesso com ID {new_id}!\n")
+                                        if new_id < 1:
+                                            print("[ERRO] O ID da bancada deve ser maior ou igual a 1 (0 é reservado para não configurado).")
+                                        else:
+                                            res = gw.set_bench(new_id, target_bench_id=0, target_mac=mac)
+                                            print(f"-> Resposta da Central: {res}")
+                                            print(f"-> Bancada {mac} configurada com sucesso com ID {new_id}!\n")
                                     else:
                                         print("Nenhuma alteração realizada")
                                     print("Continuando no modo pareamento... (Aguardando próxima bancada)")
@@ -674,9 +736,9 @@ def interactive_menu(port: Optional[str] = None):
                         time.sleep(0.05)
                 except KeyboardInterrupt:
                     print("\n[INFO] Modo de pareamento encerrado, retornando ao menu")
-            elif choice == "9":
-                ota_management_menu(gw, ota_server)
             elif choice == "10":
+                ota_management_menu(gw, ota_server)
+            elif choice == "11":
                 deb_str = input("Digite o novo tempo de debounce em milissegundos (10 a 5000 ms) [300]: ").strip() or "300"
                 if deb_str.isdigit():
                     debounce_val = int(deb_str)

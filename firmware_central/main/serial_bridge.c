@@ -147,6 +147,10 @@ static void process_json_command(const char *line) {
 
         if (cJSON_IsNumber(id_item)) {
             uint16_t new_bench_id = (uint16_t)id_item->valueint;
+            if (new_bench_id == 0 || new_bench_id > 9999) {
+                send_json_status("error", "invalid_bench_id_must_be_ge_1");
+                return;
+            }
             uint16_t target_bench_id =
                 (target_id_item && cJSON_IsNumber(target_id_item)) ? (uint16_t)target_id_item->valueint : 0;
             uint8_t target_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // default: broadcast
@@ -223,8 +227,25 @@ static void process_json_command(const char *line) {
         } else {
             send_json_status("error", "missing_debounce_ms");
         }
+    } else if (strcmp(cmd, "ping_broadcast") == 0 || strcmp(cmd, "ping_nodes") == 0) {
+        esp_err_t err = lora_send_ping_broadcast();
+        if (err == ESP_OK) {
+            send_json_status("ok", "ping_broadcast_transmitted");
+        } else {
+            send_json_status("error", "lora_tx_failed");
+        }
     } else if (strcmp(cmd, "ping") == 0) {
-        send_json_status("pong", "gateway_online");
+        cJSON *bcast = cJSON_GetObjectItem(root, "broadcast");
+        if (bcast && cJSON_IsTrue(bcast)) {
+            esp_err_t err = lora_send_ping_broadcast();
+            if (err == ESP_OK) {
+                send_json_status("ok", "ping_broadcast_transmitted");
+            } else {
+                send_json_status("error", "lora_tx_failed");
+            }
+        } else {
+            send_json_status("pong", "gateway_online");
+        }
     } else {
         ESP_LOGW(TAG, "Comando desconhecido: %s", cmd);
         send_json_status("error", "unknown_cmd");

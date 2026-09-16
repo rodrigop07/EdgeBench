@@ -12,6 +12,22 @@ static volatile int64_t s_last_sensor_interrupt_time = 0;
 static volatile uint64_t s_sensor_debounce_us = SENSOR_DEBOUNCE_US;
 static uint32_t s_total_detection_count = 0;
 
+// timer não-bloqueante para desligar o LED após o pulso visual de detecção
+static esp_timer_handle_t s_led_off_timer = NULL;
+
+static void led_off_timer_callback(void *arg) {
+    gpio_set_level(BOARD_LED_PIN, 0);
+}
+
+void sensor_manager_blink_led(uint32_t duration_ms) {
+    gpio_set_level(BOARD_LED_PIN, 1);
+    if (s_led_off_timer != NULL) {
+        esp_timer_stop(s_led_off_timer);
+        uint64_t duration_us = (duration_ms > 0 ? duration_ms : 80) * 1000ULL;
+        esp_timer_start_once(s_led_off_timer, duration_us);
+    }
+}
+
 /**
  * @brief rotina de atendimento a ISR vinculada ao GPIO 48
  * executada no contexto da ISR, alocada na IRAM
@@ -46,6 +62,9 @@ static void core1_sensor_task(void *pvParameters) {
         if (xQueueReceive(s_sensor_evt_queue, &io_num, portMAX_DELAY)) {
             s_total_detection_count++;
             time_t now = time(NULL);
+
+            // pisca o LED onboard (GPIO 35) por 80ms para dar feedback visual da detecção de passagem
+            sensor_manager_blink_led(80);
 
             sensor_data_record_t record = {
                 .count = s_total_detection_count,
@@ -98,6 +117,24 @@ esp_err_t sensor_manager_init(QueueHandle_t storage_queue) {
         return err;
     }
 
+    // configura o LED onboard (GPIO 35) como saída para feedback visual de detecção
+    gpio_config_t led_io_conf = {
+        .pin_bit_mask = (1ULL << BOARD_LED_PIN),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&led_io_conf);
+    gpio_set_level(BOARD_LED_PIN, 0);
+
+    // cria o timer de software para desligamento do pulso visual do LED
+    const esp_timer_create_args_t led_timer_args = {
+        .callback = &led_off_timer_callback,
+        .name = "sensor_led_timer",
+    };
+    esp_timer_create(&led_timer_args, &s_led_off_timer);
+
     // cria a tarefa dedicada no Core 1 com alta prioridade
     BaseType_t ret = xTaskCreatePinnedToCore(core1_sensor_task, "core1_sensor_task", 4096, NULL, 10, NULL, 1);
 
@@ -106,7 +143,7 @@ esp_err_t sensor_manager_init(QueueHandle_t storage_queue) {
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Sensor E18-D80NK inicializado no GPIO %d (Core 1)", SENSOR_E18_PIN);
+    ESP_LOGI(TAG, "Sensor E18-D80NK inicializado no GPIO %d com LED no GPIO %d (Core 1)", SENSOR_E18_PIN, BOARD_LED_PIN);
     return ESP_OK;
 }
 

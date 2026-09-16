@@ -11,6 +11,9 @@
 // pino de conexão do sensor E18-D80NK
 #define SENSOR_E18_PIN GPIO_NUM_48
 
+// pino do LED onboard no Heltec ESP32-S3 LoRa V3 (ativo em nível alto)
+#define BOARD_LED_PIN GPIO_NUM_35
+
 // janela de debounce temporal não-bloqueante de 300ms
 #define SENSOR_DEBOUNCE_US 300000ULL
 
@@ -21,7 +24,7 @@ typedef struct {
 } __attribute__((packed)) sensor_data_record_t;
 
 /**
- * @brief inicializa o GPIO 48, registra a ISR no Core 1 e inicia a tarefa de contagem
+ * @brief inicializa o GPIO 48, o LED no GPIO 35, registra a ISR no Core 1 e inicia a tarefa de contagem
  * @param storage_queue Fila para onde os eventos de detecção serão despachados
  * @return ESP_OK em caso de sucesso
  */
@@ -45,5 +48,11 @@ esp_err_t sensor_manager_set_debounce_ms(uint32_t debounce_ms);
  * @return tempo em milissegundos
  */
 uint32_t sensor_manager_get_debounce_ms(void);
+
+/**
+ * @brief pisca o LED onboard da bancada por uma duração específica em milissegundos de forma não-bloqueante
+ * @param duration_ms duração do pulso em milissegundos (padrão 80ms)
+ */
+void sensor_manager_blink_led(uint32_t duration_ms);
 
 #endif /* SENSOR_MANAGER_H */

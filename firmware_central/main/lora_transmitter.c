@@ -555,6 +555,18 @@ esp_err_t lora_send_cmd_set_debounce(const uint8_t target_mac[6], uint16_t targe
     return lora_send_packet(pkt, sizeof(pkt));
 }
 
+esp_err_t lora_send_ping_broadcast(void) {
+    uint32_t token = LORA_SECURITY_TOKEN;
+    // formato: [0xEB, 0x70, TOKEN(4B)] = 6 bytes
+    uint8_t pkt[6];
+    pkt[0] = LORA_ESPECIAL_BYTE;
+    pkt[1] = LORA_MSG_CMD_PING;
+    memcpy(&pkt[2], &token, sizeof(uint32_t));
+
+    ESP_LOGI(TAG, "Enviando Ping Broadcast via LoRa para descoberta de bancadas...");
+    return lora_send_packet(pkt, sizeof(pkt));
+}
+
 static void lora_rx_task(void *pvParameters) {
     ESP_LOGI(TAG, "Tarefa de escuta RX iniciada (Core 0)");
 
@@ -680,6 +692,19 @@ static void lora_rx_task(void *pvParameters) {
                             // emite evento JSON de telemetria na serial para o script python publicar no MQTT
                             printf("{\"type\":\"telemetry\",\"bench_id\":%u,\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\",\"count\":%lu,\"timestamp\":%llu}\n",
                                    b_id, b_mac[0], b_mac[1], b_mac[2], b_mac[3], b_mac[4], b_mac[5], (unsigned long)count, (unsigned long long)timestamp);
+                            fflush(stdout);
+                        } else if (msg_type == LORA_MSG_RESP_PONG && payload_len >= 10) {
+                            uint8_t b_mac[6];
+                            memcpy(b_mac, &rx_buffer[2], 6);
+                            uint16_t b_id = 0;
+                            memcpy(&b_id, &rx_buffer[8], sizeof(uint16_t));
+                            ESP_LOGI(TAG,
+                                     "[PONG] Bancada ID %u respondeu, MAC: %02X:%02X:%02X:%02X:%02X:%02X",
+                                     b_id, b_mac[0], b_mac[1], b_mac[2], b_mac[3], b_mac[4], b_mac[5]);
+                            // emite JSON na porta serial para consumo do script Python
+                            printf("{\"status\":\"ok\",\"msg\":\"pong\",\"bench_id\":%u,\"mac\":\"%02X:%02X:%02X:"
+                                   "%02X:%02X:%02X\"}\n",
+                                   b_id, b_mac[0], b_mac[1], b_mac[2], b_mac[3], b_mac[4], b_mac[5]);
                             fflush(stdout);
                         } else {
                             ESP_LOGW(TAG, "Pacote LoRa ignorado: msg_type=0x%02X, len=%u", msg_type, payload_len);

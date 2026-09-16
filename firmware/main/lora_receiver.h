@@ -23,6 +23,8 @@
 #define LORA_MSG_CMD_OTA 0x40          // Central -> Nó: comanda início de atualização OTA
 #define LORA_MSG_TELEMETRY 0x50        // Nó -> Central: fallback de telemetria (offline)
 #define LORA_MSG_CMD_SET_DEBOUNCE 0x60 // Central -> Nó: configura tempo de debounce em ms
+#define LORA_MSG_CMD_PING 0x70         // Central -> Broadcast: ping para todos os nós
+#define LORA_MSG_RESP_PONG 0x71        // Nó -> Central: resposta pong contendo MAC e ID de bancada
 
 // token de segurança para autorizar comandos críticos
 #define LORA_SECURITY_TOKEN 0xABCD1234

@@ -1,11 +1,12 @@
 menu "EdgeBench Configuration"
 
     config BENCH_ID
-        int "Identificador da Bancada (Bench ID)"
-        default 1
-        range 1 65535
+        int "Identificador da Bancada (Bench ID, 0 = Nao configurado)"
+        default 0
+        range 0 65535
         help
             Identificador numerico univoco desta bancada no chao de fabrica (1 a 65535).
+            O valor 0 identifica que a bancada ainda nao foi configurada.
 
     config BROKER_URL
         string "Broker URL"

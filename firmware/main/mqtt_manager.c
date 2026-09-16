@@ -177,7 +177,7 @@ esp_err_t mqtt_manager_start(const char *broker_uri, uint16_t bench_id) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    s_bench_id = (bench_id > 0) ? bench_id : 1;
+    s_bench_id = bench_id;
 
     // configura os tópicos padronizados da bancada
     snprintf(s_topic_production, sizeof(s_topic_production), "fabrica/bancada_%u/producao", s_bench_id);

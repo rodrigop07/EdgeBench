@@ -41,8 +41,11 @@ esp_err_t nvs_manager_get_wifi_credentials(char *out_ssid, size_t max_ssid_len, 
  */
 esp_err_t nvs_manager_set_wifi_credentials(const char *ssid, const char *pass);
 
+// Valor padrão que identifica bancada ainda não configurada
+#define BENCH_ID_UNCONFIGURED 0
+
 /**
- * @brief recupera o identificador da bancada (bench_id) da NVS
+ * @brief recupera o identificador da bancada (bench_id) da NVS (retorna 0 se não configurada)
  * @param bench_id ponteiro para armazenar o ID da bancada
  * @return ESP_OK em caso de sucesso
  */

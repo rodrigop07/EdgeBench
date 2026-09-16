@@ -219,7 +219,7 @@ esp_err_t nvs_manager_set_wifi_credentials(const char *ssid, const char *pass) {
 }
 
 #ifndef CONFIG_BENCH_ID
-#define CONFIG_BENCH_ID 1
+#define CONFIG_BENCH_ID BENCH_ID_UNCONFIGURED
 #endif
 
 esp_err_t nvs_manager_get_bench_id(uint16_t *bench_id) {
@@ -238,13 +238,14 @@ esp_err_t nvs_manager_get_bench_id(uint16_t *bench_id) {
 
     uint16_t id = 0;
     err = nvs_get_u16(handle, "bench_id", &id);
-    if (err != ESP_OK || id == 0 || id > 9999) {
+    if (err != ESP_OK || id > 9999) {
         id = (uint16_t)CONFIG_BENCH_ID;
-        if (id == 0) {
-            id = 1;
-        }
         if (err == ESP_ERR_NVS_NOT_FOUND) {
-            ESP_LOGW(TAG, "bench_id não encontrado na NVS. Usando valor padrão: %u", id);
+            if (id == BENCH_ID_UNCONFIGURED) {
+                ESP_LOGW(TAG, "bench_id não encontrado na NVS, bancada inicializada como NAO CONFIGURADA (ID: %u)", id);
+            } else {
+                ESP_LOGW(TAG, "bench_id não encontrado na NVS, usando valor padrão: %u", id);
+            }
         } else {
             ESP_LOGW(TAG, "Valor de 'bench_id' na NVS inválido ou erro (%s, lido=%u). Resetando para padrão: %u",
                      esp_err_to_name(err), id, id);
@@ -256,15 +257,19 @@ esp_err_t nvs_manager_get_bench_id(uint16_t *bench_id) {
     }
 
     *bench_id = id;
-    ESP_LOGI(TAG, "ID da Bancada carregado da NVS: %u", id);
+    if (id == BENCH_ID_UNCONFIGURED) {
+        ESP_LOGW(TAG, "ID da Bancada carregado da NVS: %u [NAO CONFIGURADA - Aguardando atribuicao via Central]", id);
+    } else {
+        ESP_LOGI(TAG, "ID da Bancada carregado da NVS: %u", id);
+    }
     nvs_close(handle);
     return ESP_OK;
 }
 
 esp_err_t nvs_manager_set_bench_id(uint16_t bench_id) {
-    // valida o bench_id (entre 1 e 9999)
+    // valida o bench_id (IDs válidos de bancada DEVEM começar do 1, pois 0 é reservado para não configurado)
     if (bench_id == 0 || bench_id > 9999) {
-        ESP_LOGE(TAG, "bench_id inválido: %u (deve estar entre 1 e 9999)", bench_id);
+        ESP_LOGE(TAG, "bench_id inválido: %u (números válidos devem começar do 1, faixa de 1 a 9999)", bench_id);
         return ESP_ERR_INVALID_ARG;
     }
 

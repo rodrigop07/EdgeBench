@@ -183,10 +183,23 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
         uint16_t target_bench_id = 0;
         memcpy(&target_bench_id, &payload[8], sizeof(uint16_t));
 
-        bool mac_matches = is_target_mac_me(&payload[2]);
-        bool bench_matches = (target_bench_id == 0 || target_bench_id == current_bench_id);
+        static const uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+        bool is_my_mac = (memcmp(&payload[2], s_my_mac, 6) == 0);
+        bool is_broadcast_mac = (memcmp(&payload[2], broadcast_mac, 6) == 0);
 
-        if (!mac_matches || !bench_matches) {
+        // regra de segurança essencial para o setup inicial:
+        // 1. se o pacote for endereçado ao MAC desta placa física (is_my_mac):
+        //    aceita com total segurança, mesmo se o nó estiver com ID 0 (ainda não configurado)
+        // 2. se for MAC broadcast:
+        //    target_bench_id DEVE ser >= 1 e coincidir com current_bench_id (que também deve ser >= 1)
+        //    NUNCA aceita broadcast com target_bench_id == 0 nem permite configurar nó que esteja com ID 0 por
+        //    broadcast, evitando que outras bancadas ainda não configuradas sejam sobrescritas simultaneamente
+        if (is_my_mac) {
+            // endereçamento individual e explícito por MAC (utilizado no pareamento do botão ou setup)
+        } else if (is_broadcast_mac && target_bench_id >= 1 && current_bench_id >= 1 &&
+                   target_bench_id == current_bench_id) {
+            // ndereçamento por ID de uma bancada já configurada
+        } else {
             ESP_LOGD(TAG, "CMD_SET_BENCH ignorado: não coincide com este nó (Meu ID: %u, Alvo ID: %u)",
                      current_bench_id, target_bench_id);
             return;
@@ -194,6 +207,13 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
 
         uint16_t novo_bench_id = 0;
         memcpy(&novo_bench_id, &payload[14], sizeof(uint16_t));
+
+        // validação: IDs válidos de bancada DEVEM começar do 1 (0 é reservado para não configurado)
+        if (novo_bench_id == 0 || novo_bench_id > 9999) {
+            ESP_LOGW(TAG, "CMD_SET_BENCH rejeitado: novo_bench_id inválido (%u). Deve ser >= 1", novo_bench_id);
+            return;
+        }
+
         ESP_LOGI(TAG, "Novo ID de Bancada recebido via LoRa: %u (Anterior: %u)", novo_bench_id, current_bench_id);
 
         // grava na NVS e atualiza tópicos sem reiniciar
@@ -797,7 +817,7 @@ esp_err_t lora_send_packet(const uint8_t *payload, size_t length) {
 
 // envia requisição de sincronização de horário com o endereço MAC e ID deste nó
 esp_err_t lora_send_req_time(void) {
-    uint16_t my_bench_id = 1;
+    uint16_t my_bench_id = BENCH_ID_UNCONFIGURED;
     nvs_manager_get_bench_id(&my_bench_id);
 
     // formato: [0xEB, 0x10, SENDER_MAC(6B), BENCH_ID(2B)] = 10 bytes
@@ -807,15 +827,14 @@ esp_err_t lora_send_req_time(void) {
     memcpy(&pkt[2], s_my_mac, 6);
     memcpy(&pkt[8], &my_bench_id, sizeof(uint16_t));
 
-    ESP_LOGI(TAG,
-             "Enviando solicitacao de Horario (0x10) via LoRa [MAC: %02X:%02X:%02X:%02X:%02X:%02X, ID: %u]...",
+    ESP_LOGI(TAG, "Enviando solicitacao de Horario (0x10) via LoRa [MAC: %02X:%02X:%02X:%02X:%02X:%02X, ID: %u]...",
              s_my_mac[0], s_my_mac[1], s_my_mac[2], s_my_mac[3], s_my_mac[4], s_my_mac[5], my_bench_id);
     return lora_send_packet(pkt, sizeof(pkt));
 }
 
 // envia requisição das credenciais de wifi e broker MQTT com MAC e ID deste nó
 esp_err_t lora_send_req_config(void) {
-    uint16_t my_bench_id = 1;
+    uint16_t my_bench_id = BENCH_ID_UNCONFIGURED;
     nvs_manager_get_bench_id(&my_bench_id);
 
     // formato: [0xEB, 0x20, SENDER_MAC(6B), BENCH_ID(2B)] = 10 bytes
@@ -833,7 +852,7 @@ esp_err_t lora_send_req_config(void) {
 
 // transmite pacote anunciando presença física (botão segurado por 3s) para pareamento
 esp_err_t lora_send_announce_pairing(void) {
-    uint16_t my_bench_id = 1;
+    uint16_t my_bench_id = BENCH_ID_UNCONFIGURED;
     nvs_manager_get_bench_id(&my_bench_id);
 
     // formato: [0xEB, 0x33, SENDER_MAC(6B), BENCH_ID(2B)] = 10 bytes
@@ -851,7 +870,7 @@ esp_err_t lora_send_announce_pairing(void) {
 
 // envia pacote de telemetria (fallback offline)
 esp_err_t lora_send_telemetry(uint32_t count, uint64_t timestamp) {
-    uint16_t my_bench_id = 1;
+    uint16_t my_bench_id = BENCH_ID_UNCONFIGURED;
     nvs_manager_get_bench_id(&my_bench_id);
 
     // formato: [0xEB, 0x50, MAC(6B), ID(2B), COUNT(4B), TIMESTAMP(8B)] = 22 bytes
