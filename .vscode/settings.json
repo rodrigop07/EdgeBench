@@ -26,5 +26,7 @@
         "editor.insertSpaces": true,
         "editor.detectIndentation": false
     },
-    "idf.port": "/dev/ttyUSB0"
+    "idf.port": "/dev/ttyUSB0",
+    "idf.portWin": "COM3",
+    "cmake.sourceDirectory": "C:/Users/bruno/Desktop/EdgeBench/firmware"
 }

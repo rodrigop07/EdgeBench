@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { LayoutDashboard, FileSpreadsheet, Download, RefreshCw, ServerCrash, ExternalLink } from 'lucide-react';
+import { LayoutDashboard, FileSpreadsheet, Download, RefreshCw, ServerCrash, ExternalLink, BarChart2, LineChart as LineChartIcon } from 'lucide-react';
 import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { Toaster, toast } from 'sonner';
 
 function App() {
     const [activeTab, setActiveTab] = useState<'dashboard' | 'reports'>('dashboard');
@@ -9,6 +10,8 @@ function App() {
     const [reportsData, setReportsData] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [loadingReports, setLoadingReports] = useState(false);
+    const [isGenerating, setIsGenerating] = useState(false);
+    const [chartType, setChartType] = useState<'bar' | 'line'>('bar');
     const [error, setError] = useState<string | null>(null);
 
     const fetchStatus = async () => {
@@ -42,10 +45,29 @@ function App() {
         }
     };
 
+    const generateReport = async () => {
+        setIsGenerating(true);
+        try {
+            const res = await fetch('http://localhost:8000/api/reports/generate', { method: 'POST' });
+            const data = await res.json();
+            if (data.success) {
+                toast.success('Relatório gerado com sucesso no Google Drive!');
+                fetchReports(); // Refresh da lista
+            } else {
+                toast.error('Erro ao gerar relatório: ' + data.error);
+            }
+        } catch (err) {
+            console.error('Erro ao gerar relatório:', err);
+            toast.error('Falha na comunicação com o servidor.');
+        } finally {
+            setIsGenerating(false);
+        }
+    };
+
     useEffect(() => {
         if (activeTab === 'dashboard') {
             fetchStatus();
-            const interval = setInterval(fetchStatus, 30000); // Atualiza a cada 30s
+            const interval = setInterval(fetchStatus, 1000); // Atualiza a cada 1s (Temporário para vídeo)
             return () => clearInterval(interval);
         } else {
             fetchReports();
@@ -115,13 +137,13 @@ function App() {
                 <div className="card-grid">
                     <div className="card">
                         <div className="card-title">
-                            Total Produzido
+                            Total peças
                             <LayoutDashboard size={16} />
                         </div>
                         <div className="card-value text-success">
                             {currentKpis?.total_pecas || 0}
                         </div>
-                        <div className="card-subtext">{isGeral ? 'Peças na fábrica toda' : 'Peças produzidas'}</div>
+                        <div className="card-subtext">{isGeral ? 'Peças na fábrica toda' : 'Peças contadas'}</div>
                     </div>
                     <div className="card">
                         <div className="card-title">
@@ -153,7 +175,25 @@ function App() {
                 </div>
 
                 <div className="card" style={{ marginBottom: '2rem' }}>
-                    <h3 style={{ marginBottom: '1rem', color: 'var(--text-main)', fontSize: '1.125rem' }}>Evolução da Produção Horária {isGeral ? '' : `(${selectedBancada})`}</h3>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                        <h3 style={{ color: 'var(--text-main)', fontSize: '1.125rem', margin: 0 }}>Evolução da Produção Horária {isGeral ? '' : `(${selectedBancada})`}</h3>
+                        <div style={{ display: 'flex', gap: '0.25rem', background: '#f1f5f9', padding: '0.25rem', borderRadius: '0.5rem' }}>
+                            <button
+                                onClick={() => setChartType('bar')}
+                                style={{ background: chartType === 'bar' ? 'white' : 'transparent', border: 'none', padding: '0.25rem 0.5rem', borderRadius: '0.25rem', cursor: 'pointer', display: 'flex', alignItems: 'center', boxShadow: chartType === 'bar' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none' }}
+                                title="Gráfico de Barras"
+                            >
+                                <BarChart2 size={16} color={chartType === 'bar' ? '#3b82f6' : '#64748b'} />
+                            </button>
+                            <button
+                                onClick={() => setChartType('line')}
+                                style={{ background: chartType === 'line' ? 'white' : 'transparent', border: 'none', padding: '0.25rem 0.5rem', borderRadius: '0.25rem', cursor: 'pointer', display: 'flex', alignItems: 'center', boxShadow: chartType === 'line' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none' }}
+                                title="Gráfico de Linhas"
+                            >
+                                <LineChartIcon size={16} color={chartType === 'line' ? '#3b82f6' : '#64748b'} />
+                            </button>
+                        </div>
+                    </div>
                     <div style={{ height: '300px' }}>
                         <ResponsiveContainer width="100%" height="100%">
                             <ComposedChart data={currentGrafico} margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
@@ -169,13 +209,19 @@ function App() {
                                     }}
                                     labelFormatter={(label) => {
                                         if (typeof label === 'string' && label.includes(':')) {
-                                            const hour = label.split(':')[0];
-                                            return `${hour}:00:00 - ${hour}:59:59`;
+                                            const parts = label.split(':');
+                                            const hour = parts[0];
+                                            const min = parseInt(parts[1], 10);
+                                            return `${hour}:${min.toString().padStart(2, '0')}:00 - ${hour}:${(min + 9).toString().padStart(2, '0')}:59`;
                                         }
                                         return label;
                                     }}
                                 />
-                                <Bar dataKey="pecas" fill="#3b82f6" radius={[4, 4, 0, 0]} maxBarSize={50} name="pecas" />
+                                {chartType === 'bar' ? (
+                                    <Bar dataKey="pecas" fill="#3b82f6" radius={[4, 4, 0, 0]} maxBarSize={50} name="pecas" />
+                                ) : (
+                                    <Line type="monotone" dataKey="pecas" stroke="#3b82f6" strokeWidth={3} dot={{ r: 4 }} activeDot={{ r: 6 }} name="pecas" />
+                                )}
                                 <Line type="stepAfter" dataKey="media" stroke="#f59e0b" strokeWidth={2} strokeDasharray="5 5" dot={false} name="media" />
                             </ComposedChart>
                         </ResponsiveContainer>
@@ -242,9 +288,14 @@ function App() {
             <div className="table-container">
                 <div className="table-header">
                     <h3 style={{ fontSize: '1.125rem', fontWeight: 600 }}>Relatórios no Google Drive</h3>
-                    <button className="btn btn-outline" onClick={fetchReports}>
-                        <RefreshCw size={16} /> Atualizar
-                    </button>
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <button className="btn btn-primary" onClick={generateReport} disabled={isGenerating}>
+                            {isGenerating ? 'Gerando (Aguarde)...' : 'Gerar Relatório Agora'}
+                        </button>
+                        <button className="btn btn-outline" onClick={fetchReports}>
+                            <RefreshCw size={16} /> Atualizar
+                        </button>
+                    </div>
                 </div>
                 <table>
                     <thead>
@@ -310,7 +361,7 @@ function App() {
                         onClick={() => setActiveTab('dashboard')}
                     >
                         <LayoutDashboard size={18} />
-                        Visão Geral (Fábrica)
+                        Visão Geral
                     </div>
                     <div
                         className={`nav-link ${activeTab === 'reports' ? 'active' : ''}`}
@@ -331,7 +382,7 @@ function App() {
                         {activeTab === 'dashboard' && (
                             <>
                                 <span style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>
-                                    {loading ? 'Atualizando...' : `Última atualização: ${new Date().toLocaleTimeString('pt-BR')}`}
+                                    Última atualização: {new Date().toLocaleTimeString('pt-BR')}
                                 </span>
                                 <button className="btn btn-outline" style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }} onClick={fetchStatus}>
                                     <RefreshCw size={14} /> Atualizar
@@ -344,6 +395,7 @@ function App() {
                 {activeTab === 'dashboard' ? renderDashboard() : renderReports()}
 
             </main>
+            <Toaster position="bottom-right" richColors />
         </div>
     );
 }
