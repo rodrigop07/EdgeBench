@@ -41,9 +41,10 @@ Esta seção lista **tudo** o que é necessário para reproduzir o projeto do ze
 | 1× | **Sensor Fotoelétrico E18-D80NK** | Barreira difusa, NPN coletor aberto, 5V, alcance 3–80 cm | Detecção de peças na calha de saída |
 | 2× | **Cabo USB-C para USB-A/C** | Dados + alimentação, mínimo 1 m | Gravação de firmware e alimentação |
 | 1× | **Fonte de alimentação 5V** | USB ou fonte externa 5V/1A | Alimentação da bancada em campo (quando sem USB do PC) |
+| 2× | **Antena 915 MHz + Cabo Pigtail** | Conector micro IPEX/U.FL para SMA fêmea + antena chicote 915 MHz | Transmissão e recepção de rádio LoRa (Bancada e Central) |
 | —  | **Jumpers / fios de conexão** | Macho-fêmea, 3 unidades (VCC, GND, SINAL) | Interligação do sensor ao ESP32 |
 
-> **Nota:** Para cada bancada adicional no chão de fábrica, é necessário **1× Heltec WiFi LoRa 32 V3** e **1× Sensor E18-D80NK** adicionais. A Central Gateway é compartilhada por todas as bancadas via rádio LoRa.
+> **Nota:** Para cada bancada adicional no chão de fábrica, é necessário **1× Heltec WiFi LoRa 32 V3**, **1× Sensor E18-D80NK** e **1× Antena 915 MHz com Pigtail** adicionais. A Central Gateway é compartilhada por todas as bancadas via rádio LoRa.
 
 ### 1.2 Requisitos de Software
 
@@ -98,7 +99,7 @@ flowchart TD
                 FLASH_MGR["Buffer Binário Não-Volátil (LittleFS)\n(8 bytes/registro, 90+ dias offline)"]
                 WIFI_MQTT["Pilha Wi-Fi & Cliente MQTT\n(QoS 1, LWT, Reconexão Auto)"]
                 LORA_RX["Driver LoRa SX1262\n(Pareamento, Config, Ping/Pong, OTA)"]
-                BTN_MGR["Botão PRG GPIO 0\n(Curto: Sync / Longo 3s: Anúncio)"]
+                BTN_MGR["Botão PRG GPIO 0\n(Curto: Sync / Médio 3s: Pareamento / Longo 10s: Factory Reset)"]
                 
                 TASK_PROC -->|Modo Offline| FLASH_MGR
                 TASK_PROC -->|Modo Online| WIFI_MQTT
@@ -198,7 +199,7 @@ O projeto adota o kit **Heltec WiFi LoRa 32 V3**, integrando microcontrolador du
 | :--- | :---: | :--- | :--- |
 | **Sensor E18-D80NK (Sinal OUT)** | **GPIO 48** | Entrada com Pull-up interno | Saída NPN coletor aberto (0V na detecção da peça, 3.3V em repouso). |
 | **LED Indicador Onboard** | **GPIO 35** | Saída Digital (Ativo Alto) | Feedback visual imediato de passagem de peça (pulso 80ms) e Ping Broadcast (150ms). |
-| **Botão Físico PRG Onboard** | **GPIO 0** | Entrada com Pull-up interno | Toque curto (<1.5s): sync de hora/config; Toque médio (>3s): anúncio de pareamento; Toque longo (10s): Factory reset. 
+| **Botão Físico PRG Onboard** | **GPIO 0** | Entrada com Pull-up interno | Toque curto (<1.5s): sync de hora/config; Toque médio (>3s): anúncio de pareamento; Toque longo (10s): Factory reset. |
 | **Alimentação do Sensor (VCC)** | **5V / VBUS** | 5V DC | Alimentação positiva do sensor fotoelétrico. |
 | **Referência de Terra (GND)** | **GND** | 0V | Terra comum entre fonte, sensor e microcontrolador. |
 | **LoRa SX1262 NSS** | **GPIO 8** | Saída SPI (Chip Select) | Seleção do chip LoRa via barramento SPI dedicado. |
@@ -233,7 +234,7 @@ graph LR
     OUT -->|Pulso Digital 0V / 3.3V| PIN_GPIO48
 ```
 
-**Passo a passo da conexão:**
+**Passo a passo da conexão do sensor:**
 
 1. **Fio Marrom (VCC)** → conectar ao pino **5V** (VBUS) da Heltec.
 2. **Fio Azul (GND)** → conectar ao pino **GND** da Heltec.
@@ -242,6 +243,48 @@ graph LR
 > **Nota de Proteção Elétrica:** O sensor E18-D80NK possui saída NPN em coletor aberto. O pull-up interno do ESP32 (`GPIO_PULLUP_ENABLE`) mantém a linha em **3.3V** em repouso. Ao detectar a peça, o transistor interno do sensor conecta o pino ao terra (**0V**), gerando borda de descida perfeitamente segura e imune a sobretensão.
 
 > **Importante:** A Central Gateway **não requer conexão de sensor**. Ela é conectada apenas via cabo USB ao computador e funciona como ponte LoRa ↔ Serial.
+
+### 3.3 Conexão da Antena LoRa com Cabo Pigtail (IPEX/U.FL para SMA)
+
+Ambas as placas Heltec WiFi LoRa 32 V3 (**Bancada** e **Central Gateway**) operam com rádio LoRa na faixa de **915 MHz** e exigem o acoplamento obrigatório da antena externa via cabo adaptador coaxial (*pigtail*):
+
+```mermaid
+graph LR
+    subgraph HELTEC["Placa Heltec ESP32-S3 LoRa V3"]
+        UFL["Conector Micro IPEX / U.FL Onboard"]
+    end
+
+    subgraph PIGTAIL["Cabo Coaxial Blindado (Pigtail 50Ω)"]
+        PLUG_UFL["Plugue IPEX / U.FL"]
+        CABO["Cabo RG178"]
+        SMA_FEM["Conector SMA Fêmea (Com Porca/Arruela)"]
+        PLUG_UFL --- CABO --- SMA_FEM
+    end
+
+    subgraph ANTENA["Antena Externa"]
+        SMA_MASC["Conector SMA Macho"]
+        CHICOTE["Antena Chicote Articulada 915 MHz"]
+        SMA_MASC --- CHICOTE
+    end
+
+    UFL -->|Encaixe sob pressão axial| PLUG_UFL
+    SMA_FEM -->|Rosqueamento manual| SMA_MASC
+```
+
+**Procedimento de Montagem da Antena:**
+
+1. **Encaixe do Conector U.FL / IPEX:**
+   * Posicione o plugue micro-coaxial dourado do cabo pigtail alinhado de forma perfeitamente perpendicular sobre o soquete IPEX da placa Heltec.
+   * Aplique uma leve pressão vertical (axial) com o dedo ou espátula plástica até ouvir/sentir um clique de encaixe mecânico.
+   * *Atenção:* Nunca exerça força angular ou faça alavanca para não descolar o soquete SMD da placa.
+2. **Fixação em Gabinete/Painel:**
+   * Se a placa for acondicionada em caixa de proteção industrial, insira o conector SMA fêmea pelo orifício do painel e fixe-o com a arruela de pressão e a porca sextavada externa.
+3. **Rosqueamento da Antena:**
+   * Rosqueie a antena chicote de 915 MHz no conector SMA fêmea até atingir o aperto manual firme.
+
+> ⚠️ **ALERTA CRÍTICO DE HARDWARE (RF Safety):**  
+> **NUNCA ligue a placa ou execute rotinas de transmissão de rádio LoRa sem a antena devidamente conectada!**  
+> Transmitir sinal de radiofrequência com a saída em circuito aberto (sem a terminação de carga casada de 50 Ω da antena) provoca a reflexão total da onda eletromagnética (*alto VSWR*). Essa energia refletida superaquece e resulta na **queima imediata e irreversível do amplificador de potência de RF (*Power Amplifier - PA*) integrado ao chip Semtech SX1262**.
 
 ---
 
@@ -288,9 +331,10 @@ Todos os pacotes LoRa possuem o byte identificador do projeto `0xEB` no cabeçal
 ## 5. Recursos de Firmware e Usabilidade em Campo
 
 ### 5.1 Botão Físico Multifunção (PRG - GPIO 0)
-Permite comissionar e configurar bancadas no chão de fábrica sem computador ou cabo USB:
-* **Toque Curto (< 1.5s):** A bancada transmite `REQ_TIME` e `REQ_CONFIG` via LoRa, solicitando imediatamente horário e credenciais da rede para a Central.
-* **Toque Longo (> 3s):** A bancada entra em modo de pareamento e emite `ANNOUNCE_PAIRING` (0x33). O operador na estação central vê o MAC e o ID no menu interativo do CLI e define o novo ID numerico da bancada na hora.
+Permite comissionar, sincronizar e resetar bancadas diretamente no chão de fábrica sem a necessidade de computador ou cabo serial:
+* **Toque Curto (< 1.5s):** A bancada transmite os pacotes `REQ_TIME` e `REQ_CONFIG` via rádio LoRa, solicitando imediatamente o carimbo de data/hora atual e as credenciais de rede Wi-Fi/Broker para a Central.
+* **Toque Médio (> 3s):** A bancada entra em modo de pareamento físico e emite `ANNOUNCE_PAIRING` (0x33). O operador na estação central visualiza o endereço MAC e o ID no menu interativo do CLI (`uart_serial.py`) e define o novo ID numérico da bancada instantaneamente.
+* **Toque Longo (10s) — Factory Reset:** Restaura o nó de bancada aos padrões de fábrica. Ao segurar o botão PRG continuamente por 10 segundos, a rotina `nvs_manager_factory_reset()` apaga completamente todas as chaves do namespace da NVS (limpa credenciais Wi-Fi, URL de broker e restaura o ID da bancada para `ID = 0` / não configurada). Em seguida, o ESP32 é reiniciado automaticamente após 1 segundo, pronto para um novo comissionamento seguro.
 
 ### 5.2 Feedback Visual Não-Bloqueante (LED - GPIO 35)
 * **Passagem de Peça:** Dispara um pulso luminoso de **80 ms** acionado via `esp_timer` no Core 1.
@@ -372,7 +416,7 @@ EdgeBench/
 | **Sensoriamento & Debounce** | [`firmware_bancada/main/sensor_manager.c`](firmware_bancada/main/sensor_manager.c) | Contagem atômica na ISR, debounce dinâmico, pulso do LED GPIO 35. |
 | **Armazenamento Offline** | [`firmware_bancada/main/storage_manager.c`](firmware_bancada/main/storage_manager.c) | Buffer binário de 8 bytes na partição LittleFS (90+ dias de autonomia). |
 | **Protocolo LoRa das Bancadas** | [`firmware_bancada/main/lora_receiver.c`](firmware_bancada/main/lora_receiver.c) | Recepção de Beacons, pareamento, Ping/Pong e atualização OTA. |
-| **Botão de Setup Rápido** | [`firmware_bancada/main/button_manager.c`](firmware_bancada/main/button_manager.c) | Toque curto (<1.5s) e toque longo (>3s) para anúncio de pareamento. |
+| **Botão de Setup Rápido** | [`firmware_bancada/main/button_manager.c`](firmware_bancada/main/button_manager.c) | Toque curto (<1.5s): sync; Toque médio (>3s): pareamento; Toque longo (10s): factory reset. |
 | **Gateway Mestre LoRa** | [`firmware_central/main/lora_transmitter.c`](firmware_central/main/lora_transmitter.c) | Transmissão de comandos de rádio e escuta RX contínua na Central. |
 | **Ponte Serial UART** | [`firmware_central/main/serial_bridge.c`](firmware_central/main/serial_bridge.c) | Tradução bidirecional entre comandos JSON serial e pacotes RF. |
 | **Painel Serial & Driver** | [`app/hardware_comunication/uart_serial.py`](app/hardware_comunication/uart_serial.py) | Menu com 11 funções (Ping Broadcast, Pareamento, Servidor HTTP OTA). |
