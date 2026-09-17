@@ -260,7 +260,7 @@ O particionamento da Flash conta com duas áreas de aplicação (`ota_0` e `ota_
 EdgeBench/
 ├── README.md                                  # Guia mestre de arquitetura, protocolo e instruções (este documento)
 ├── LICENSE                                    # Licença MIT
-├── firmware/                                  # Firmware do Nó de Borda Fabril (ESP32-S3 de Bancada)
+├── firmware_bancada/                          # Firmware do Nó de Borda Fabril (ESP32-S3 de Bancada)
 │   ├── CMakeLists.txt                         # Script de compilação do projeto da bancada
 │   ├── partitions.csv                         # Particionamento: nvs, otadata, ota_0, ota_1, storage (LittleFS)
 │   ├── sdkconfig.defaults                     # Configurações do SDK (FreeRTOS dual-core, clock 240MHz)
@@ -315,10 +315,10 @@ EdgeBench/
 
 | Módulo da Arquitetura | Arquivo Principal | Função Central |
 | :--- | :--- | :--- |
-| **Sensoriamento & Debounce** | [`firmware/main/sensor_manager.c`](firmware/main/sensor_manager.c) | Contagem atômica na ISR, debounce dinâmico, pulso do LED GPIO 35. |
-| **Armazenamento Offline** | [`firmware/main/storage_manager.c`](firmware/main/storage_manager.c) | Buffer binário de 8 bytes na partição LittleFS (90+ dias de autonomia). |
-| **Protocolo LoRa das Bancadas** | [`firmware/main/lora_receiver.c`](firmware/main/lora_receiver.c) | Recepção de Beacons, pareamento, Ping/Pong e atualização OTA. |
-| **Botão de Setup Rápido** | [`firmware/main/button_manager.c`](firmware/main/button_manager.c) | Toque curto (<1.5s) e toque longo (>3s) para anúncio de pareamento. |
+| **Sensoriamento & Debounce** | [`firmware_bancada/main/sensor_manager.c`](firmware_bancada/main/sensor_manager.c) | Contagem atômica na ISR, debounce dinâmico, pulso do LED GPIO 35. |
+| **Armazenamento Offline** | [`firmware_bancada/main/storage_manager.c`](firmware_bancada/main/storage_manager.c) | Buffer binário de 8 bytes na partição LittleFS (90+ dias de autonomia). |
+| **Protocolo LoRa das Bancadas** | [`firmware_bancada/main/lora_receiver.c`](firmware_bancada/main/lora_receiver.c) | Recepção de Beacons, pareamento, Ping/Pong e atualização OTA. |
+| **Botão de Setup Rápido** | [`firmware_bancada/main/button_manager.c`](firmware_bancada/main/button_manager.c) | Toque curto (<1.5s) e toque longo (>3s) para anúncio de pareamento. |
 | **Gateway Mestre LoRa** | [`firmware_central/main/lora_transmitter.c`](firmware_central/main/lora_transmitter.c) | Transmissão de comandos de rádio e escuta RX contínua na Central. |
 | **Ponte Serial UART** | [`firmware_central/main/serial_bridge.c`](firmware_central/main/serial_bridge.c) | Tradução bidirecional entre comandos JSON serial e pacotes RF. |
 | **Painel Serial & Driver** | [`app/hardware_comunication/uart_serial.py`](app/hardware_comunication/uart_serial.py) | Menu com 11 funções (Ping Broadcast, Pareamento, Servidor HTTP OTA). |
@@ -363,13 +363,13 @@ Baixe e execute o [instalador ESP-IDF](https://dl.espressif.com/dl/esp-idf/) ou 
 
 > **Verificação:** Execute `idf.py --version` e confirme que a versão exibida é `v5.5.x`.
 
-### 7.3 Compilar e Gravar o Firmware da Bancada (`firmware/`)
+### 7.3 Compilar e Gravar o Firmware da Bancada (`firmware_bancada/`)
 
 1. Conecte a placa Heltec da **bancada** ao computador via cabo USB-C.
 2. Identifique a porta serial: `COM3` (Windows), `/dev/ttyUSB0` ou `/dev/ttyACM0` (Linux/macOS).
 
 ```bash
-cd firmware
+cd firmware_bancada
 idf.py set-target esp32s3
 idf.py build
 idf.py -p <PORTA_SERIAL> flash monitor

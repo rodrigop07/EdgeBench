@@ -9,6 +9,7 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+# pyrefly: ignore [missing-import]
 from sqlalchemy import text
 
 APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
