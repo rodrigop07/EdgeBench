@@ -49,7 +49,7 @@ except Exception:
     DEFAULT_MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 
 DEFAULT_BUILD_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "firmware", "build")
+    os.path.join(os.path.dirname(__file__), "..", "..", "firmware_bancada", "build")
 )
 
 
@@ -119,9 +119,9 @@ class LocalOTAServer:
         self.is_running = False
         logger.info("Servidor HTTP OTA encerrado")
 
-    def get_firmware_url(self) -> str:
+    def get_firmware_url(self, filename: str = "firmware.bin") -> str:
         local_ip = self.get_local_ip()
-        return f"http://{local_ip}:{self.port}/firmware.bin"
+        return f"http://{local_ip}:{self.port}/{filename}"
 
 
 class EdgeBenchGateway:
@@ -572,7 +572,9 @@ def _dispatch_ota(gw: EdgeBenchGateway, url: str):
 def ota_management_menu(gw: EdgeBenchGateway, ota_server: LocalOTAServer):
     while True:
         local_ip = LocalOTAServer.get_local_ip()
-        bin_path = os.path.join(ota_server.directory, "firmware.bin")
+        # Suporta tanto firmware_bancada.bin quanto firmware.bin gerado pelo ESP-IDF
+        bin_name = "firmware_bancada.bin" if os.path.exists(os.path.join(ota_server.directory, "firmware_bancada.bin")) else "firmware.bin"
+        bin_path = os.path.join(ota_server.directory, bin_name)
         has_bin = os.path.exists(bin_path)
         bin_size_kb = os.path.getsize(bin_path) // 1024 if has_bin else 0
         server_status = f"ATIVO em http://{local_ip}:{ota_server.port}" if ota_server.is_running else "PARADO"
@@ -581,7 +583,7 @@ def ota_management_menu(gw: EdgeBenchGateway, ota_server: LocalOTAServer):
         print("    EdgeBench - Gerenciador de Atualização OTA")
         print("=" * 60)
         print(f" IP Local da Máquina  : {local_ip}")
-        print(f" Arquivo firmware.bin : {'ENCONTRADO (' + str(bin_size_kb) + ' KB)' if has_bin else 'NÃO ENCONTRADO em ' + bin_path}")
+        print(f" Arquivo ({bin_name}) : {'ENCONTRADO (' + str(bin_size_kb) + ' KB)' if has_bin else 'NÃO ENCONTRADO em ' + bin_path}")
         print(f" Servidor HTTP Local  : [{server_status}]")
         print("-" * 60)
         print("  [1] Disparo Rápido com Servidor Local Automático (Recomendado)")
@@ -593,7 +595,7 @@ def ota_management_menu(gw: EdgeBenchGateway, ota_server: LocalOTAServer):
         if sub_choice == "1":
             if not has_bin:
                 print(f"\n[ERRO] Arquivo {bin_path} não encontrado")
-                print("Execute 'idf.py build' na pasta firmware primeiro")
+                print("Execute 'idf.py build' na pasta firmware_bancada primeiro")
                 continue
 
             if not ota_server.is_running:
@@ -601,7 +603,7 @@ def ota_management_menu(gw: EdgeBenchGateway, ota_server: LocalOTAServer):
                     print("[ERRO] Falha ao iniciar servidor HTTP local")
                     continue
 
-            url = ota_server.get_firmware_url()
+            url = ota_server.get_firmware_url(bin_name)
             _dispatch_ota(gw, url)
 
         elif sub_choice == "2":
@@ -617,7 +619,7 @@ def ota_management_menu(gw: EdgeBenchGateway, ota_server: LocalOTAServer):
                 print("-> Servidor HTTP parado")
             else:
                 if ota_server.start():
-                    print(f"-> Servidor HTTP iniciado em http://{local_ip}:{ota_server.port}/firmware.bin")
+                    print(f"-> Servidor HTTP iniciado em {ota_server.get_firmware_url(bin_name)}")
                 else:
                     print("-> Falha ao iniciar servidor HTTP")
 

@@ -30,7 +30,7 @@
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",
-    "--compile-commands-dir=c:\\Users\\rodri\\Documents\\business\\EdgeBench\\firmware\\build"
+    "--compile-commands-dir=c:\\Users\\rodri\\Documents\\business\\EdgeBench\\firmware_bancada\\build"
   ],
   "editor.tabSize": 4,
   "editor.insertSpaces": true,
