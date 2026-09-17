@@ -1,29 +1,25 @@
 """
-analytics.py — Análise de séries temporais de telemetria via Pandas + SQL.
-
-Funções disponíveis:
-    - load_telemetry_df()      : Carrega registros do PostgreSQL com tipagem e campos de data/hora.
-    - detect_idleness()        : Detecta paradas não programadas (>15 min) conforme a regra RN-06.
-    - aggregate_hourly_pivot() : Gera Matriz Cruzada (Pivot) de Bancada x Hora para o PCP.
-    - aggregate_by_hour()      : Agrupamento plano de produção por hora.
-    - aggregate_by_shift()     : Agrupamento por turno (T1/T2/T3) com totais e eficiência.
-    - compute_kpis()           : KPIs consolidados individuais por bancada.
-    - full_report()            : Dicionário completo estruturado para exportação executiva no Excel.
+Análise dos dados de produção.
+Aqui pegamos os dados crus do banco e transformamos em métricas úteis (total de peças, paradas, eficiência por turno).
 """
 
 import logging
+import os
+import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from sqlalchemy import text
 
-from database import engine
+APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
+
+from settings.database import engine
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Definição dos turnos de produção (Regra RN-02)
-# ─────────────────────────────────────────────────────────────────────────────
+# Regras de Horário dos Turnos
 
 SHIFT_DEFINITIONS: list[dict[str, Any]] = [
     {"turno": "Turno 1", "label": "T1 (06h–14h)", "start": 6,  "end": 14},
@@ -33,7 +29,7 @@ SHIFT_DEFINITIONS: list[dict[str, Any]] = [
 
 
 def _classify_shift(hour: int) -> str:
-    """Classifica uma hora (0-23) no turno correspondente."""
+    """Descobre em qual turno uma certa hora se encaixa."""
     if 6 <= hour < 14:
         return "T1 (06h–14h)"
     elif 14 <= hour < 22:
@@ -42,18 +38,14 @@ def _classify_shift(hour: int) -> str:
         return "T3 (22h–06h)"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Carregamento de dados
-# ─────────────────────────────────────────────────────────────────────────────
+# Busca de Dados no Banco
 
 def load_telemetry_df(
     bancada_id: str | None = None,
     start_dt: str | None = None,
     end_dt: str | None = None,
 ) -> pd.DataFrame:
-    """
-    Carrega registros de telemetria do PostgreSQL em um DataFrame.
-    """
+    """Puxa os dados de produção do banco para a memória."""
     query = """
         SELECT
             id,
@@ -105,15 +97,10 @@ def load_telemetry_df(
     return df
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Detecção de Paradas Não Programadas (>15 min)
-# ─────────────────────────────────────────────────────────────────────────────
+# Detector de Máquina Parada
 
 def detect_idleness(df: pd.DataFrame, threshold_minutes: int = 15) -> Tuple[pd.DataFrame, Dict[str, Dict[str, Any]]]:
-    """
-    Identifica períodos onde uma bancada permaneceu mais de threshold_minutes
-    consecutivos sem produzir qualquer peça durante o turno operacional.
-    """
+    """Acha os momentos em que a bancada ficou parada por muito tempo sem produzir nada."""
     if df.empty:
         return pd.DataFrame(), {}
 
@@ -179,14 +166,10 @@ def detect_idleness(df: pd.DataFrame, threshold_minutes: int = 15) -> Tuple[pd.D
     return downtimes_df, summary
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Matriz Cruzada Horária (PCP Pivot Table - Seção 5.4)
-# ─────────────────────────────────────────────────────────────────────────────
+# Tabela Resumo por Hora
 
 def aggregate_hourly_pivot(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Gera a Matriz Cruzada de Bancadas (Linhas) vs Horas (Colunas) com totalizadores.
-    """
+    """Cria uma tabela mostrando quanto cada bancada produziu em cada hora do dia."""
     if df.empty:
         return pd.DataFrame()
 
@@ -219,12 +202,10 @@ def aggregate_hourly_pivot(df: pd.DataFrame) -> pd.DataFrame:
     return pivot.reset_index()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Agregações Complementares
-# ─────────────────────────────────────────────────────────────────────────────
+# Outros Agrupamentos
 
 def aggregate_by_hour(df: pd.DataFrame) -> pd.DataFrame:
-    """Agrega produção por bancada e hora do dia (visão tabular analítica)."""
+    """Soma a produção de cada bancada por hora."""
     if df.empty:
         return pd.DataFrame()
 
@@ -260,7 +241,7 @@ def aggregate_by_10min(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def aggregate_by_shift(df: pd.DataFrame) -> pd.DataFrame:
-    """Agrega produção por bancada e turno com percentual de eficiência formatável."""
+    """Soma a produção por turno e calcula a eficiência baseada na meta."""
     if df.empty:
         return pd.DataFrame()
 
@@ -284,7 +265,7 @@ def aggregate_by_shift(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_kpis(df: pd.DataFrame, idleness_summary: Optional[Dict[str, Dict[str, Any]]] = None) -> pd.DataFrame:
-    """Gera KPIs consolidados por bancada, incluindo métricas da regra RN-06."""
+    """Gera os indicadores principais (peças totais, tempo parado, etc) de cada bancada."""
     if df.empty:
         return pd.DataFrame()
 
@@ -337,16 +318,14 @@ def compute_kpis(df: pd.DataFrame, idleness_summary: Optional[Dict[str, Dict[str
     return kpis
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Relatório Completo Estruturado
-# ─────────────────────────────────────────────────────────────────────────────
+# Pacote Fechado do Relatório
 
 def full_report(
     bancada_id: str | None = None,
     start_dt: str | None = None,
     end_dt: str | None = None,
 ) -> Dict[str, Any]:
-    """Gera o pacote analítico completo com métricas globais e específicas."""
+    """Junta todas as métricas em um pacote só, pronto para virar Excel ou ir pro painel."""
     df = load_telemetry_df(bancada_id=bancada_id, start_dt=start_dt, end_dt=end_dt)
 
     downtimes_df, idleness_summary = detect_idleness(df)

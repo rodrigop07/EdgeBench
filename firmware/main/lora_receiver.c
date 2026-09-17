@@ -5,6 +5,7 @@
 #include "esp_mac.h"
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
+#include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -245,6 +246,11 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
         nvs_manager_get_bench_id(&my_id);
 
         if (req_id == 0 || req_id == my_id) {
+            if (req_id == 0) {
+                // broadcast query: delay pseudo-aleatorio para evitar colisao de RF no ar
+                uint32_t jitter_ms = 20 + (esp_random() % 380);
+                vTaskDelay(pdMS_TO_TICKS(jitter_ms));
+            }
             ESP_LOGI(TAG, "Respondendo consulta de MAC para Bancada ID %u com meu MAC...", my_id);
             // formato de resposta: [0xEB, 0x32, MAC(6B), BENCH_ID(2B)] = 10 bytes
             uint8_t resp[10];
@@ -364,8 +370,12 @@ void lora_process_packet(const uint8_t *payload, size_t length) {
         uint16_t my_id = 0;
         nvs_manager_get_bench_id(&my_id);
 
-        ESP_LOGI(TAG, "Ping Broadcast recebido da Central, respondendo PONG (ID: %u, MAC: %02X:%02X:%02X:%02X:%02X:%02X)...",
+        ESP_LOGI(TAG, "Ping Broadcast recebido da Central (ID: %u, MAC: %02X:%02X:%02X:%02X:%02X:%02X), aplicando jitter...",
                  my_id, s_my_mac[0], s_my_mac[1], s_my_mac[2], s_my_mac[3], s_my_mac[4], s_my_mac[5]);
+
+        // Jitter aleatorio (20 a 400ms) para evitar colisao de pacotes LoRa quando multiplas bancadas respondem simultaneamente
+        uint32_t jitter_ms = 20 + (esp_random() % 380);
+        vTaskDelay(pdMS_TO_TICKS(jitter_ms));
 
         // formato de resposta: [0xEB, 0x71, MAC(6B), BENCH_ID(2B)] = 10 bytes
         uint8_t resp[10];

@@ -72,88 +72,66 @@ A arquitetura do **EdgeBench** é estruturada em três camadas integradas, segre
 ### 2.1 Diagrama Geral de Arquitetura
 
 ```mermaid
-flowchart TB
-    subgraph CAMADA1["CAMADA 1: CHÃO DE FÁBRICA / BORDA FABRIL (NÓS DE BANCADA)"]
+flowchart TD
+    subgraph BANCADA["CAMADA 1: CHÃO DE FÁBRICA / BORDA FABRIL (BANCADA)"]
         direction TB
-        subgraph FISICO["Elementos Físicos e Sensoriamento"]
-            PECA["Peça Montada (Gravidade)"] --> CALHA["Calha de Saída"]
-            CALHA --> SENSOR["Sensor E18-D80NK\n(NPN Coletor Aberto 5V)"]
-            BOTAO["Botão Físico PRG (GPIO 0)\n(Curto: Sync | Longo 3s: Pareamento)"]
-            LED["LED Onboard Branco (GPIO 35)\n(Feedback de Detecção e Ping)"]
-        end
-
-        subgraph HELTEC_NODE["Heltec ESP32-S3 LoRa V3 (Dual-Core @ 240MHz, 8MB Flash)"]
+        
+        PECA["Peça Montada (Passagem Física)"] --> CALHA["Calha de Saída por Gravidade"]
+        CALHA --> SENSOR["Sensor Fotoelétrico E18-D80NK\n(Saída NPN Coletor Aberto 5V)"]
+        FONTE["Fonte Chaveada 5V 2A\n(Filtro EMI)"] -.-> SENSOR
+        SENSOR --> COND["Condicionador de Sinal\n(Divisor Resistivo / Optoacoplador PC817)"]
+        
+        subgraph HW_ESP32["Nó de Borda: Heltec ESP32-S3 LoRa"]
             direction TB
-            subgraph CORE1_BOX["Core 1 (Tempo Real Estrito / IRAM)"]
-                ISR_SENS["ISR de Detecção (GPIO 48)\n(Borda de Descida / IRAM_ATTR)"]
-                DEBOUNCE_BOX["Debounce Dinâmico\n(10..5000 ms - Padrão 300 ms)"]
-                TIMER_LED["Pulso Não-Bloqueante de LED (80ms)\n(esp_timer)"]
-                FILA_PROD["Fila FreeRTOS de Eventos"]
-
-                ISR_SENS --> DEBOUNCE_BOX --> FILA_PROD
-                ISR_SENS --> TIMER_LED
-            end
-
-            subgraph CORE0_BOX["Core 0 (Operação, Comunicação e Armazenamento)"]
-                TASK_DISPATCH["Task de Despacho e Controle"]
-                STORAGE_MGR["Storage Manager\n(LittleFS - Buffer Binário 8B)"]
-                WIFI_MQTT_MGR["Wi-Fi & MQTT Manager\n(QoS 1, Reconeção, Dreno FIFO)"]
-                LORA_RX_MGR["LoRa Receiver (SX1262 @ 915MHz)\n(Beacon, OTA, Setup, Ping/Pong)"]
-                NVS_MGR["NVS Manager\n(Credenciais, ID, Debounce)"]
-                OTA_MGR["OTA Manager\n(Dual Partition ota_0/ota_1)"]
-
-                FILA_PROD --> TASK_DISPATCH
-                TASK_DISPATCH -->|Rede Online| WIFI_MQTT_MGR
-                TASK_DISPATCH -->|Rede Offline| STORAGE_MGR
-                STORAGE_MGR -->|Dreno FIFO pós-reconexão| WIFI_MQTT_MGR
-            end
-
-            FLASH_CHIP["Memória Flash SPI 8MB\n(Partições: nvs, ota_0, ota_1, storage)"]
-            SX1262_NODE["Transceptor SX1262 (SPI)"]
-
-            STORAGE_MGR <--> FLASH_CHIP
-            NVS_MGR <--> FLASH_CHIP
-            OTA_MGR <--> FLASH_CHIP
-            LORA_RX_MGR <--> SX1262_NODE
-        end
-
-        SENSOR -->|Pulso Digital 0V / Pull-Up 3.3V| ISR_SENS
-        TIMER_LED -.-> LED
-        BOTAO --> HELTEC_NODE
-    end
-
-    subgraph CAMADA2["CAMADA 2: CONECTIVIDADE & GATEWAY CENTRAL"]
-        direction TB
-        WIFI_INFRA["Rede Wi-Fi Industrial 2.4 GHz"]
-        BROKER_MQTT["Broker MQTT: Mosquitto / EMQX\n(fabrica/bancada_+/producao)"]
-
-        subgraph CENTRAL_GW["Central Gateway (Heltec ESP32-S3 LoRa USB)"]
-            SX1262_GW["Transceptor SX1262 (915 MHz)"]
-            LORA_TX_GW["LoRa Transmitter & RX Listener"]
-            SERIAL_BRIDGE["Serial Bridge (UART JSON Bidirecional)"]
             
-            SX1262_GW <--> LORA_TX_GW <--> SERIAL_BRIDGE
+            subgraph CORE1["Core 1 (Alta Prioridade / Tempo Real)"]
+                ISR["Tratador de Interrupção Externa (ISR)\n(Borda de Descida / IRAM)"]
+                DEBOUNCE["Filtro de Debounce Temporal (300 ms)"]
+                QUEUE_SENS["Fila FreeRTOS de Eventos"]
+                ISR --> DEBOUNCE --> QUEUE_SENS
+            end
+
+            subgraph CORE0["Core 0 (Operação, Armazenamento e Rede)"]
+                TASK_PROC["Tarefa de Processamento e Despacho"]
+                FLASH_MGR["Driver de Persistência Flash\n(SPIFFS / LittleFS)"]
+                WIFI_MQTT["Pilha Wi-Fi & Cliente MQTT (QoS 1)"]
+                LORA_RX["Driver LoRa SX1262\n(Receptor de Beacon)"]
+                
+                TASK_PROC -->|Modo Offline| FLASH_MGR
+                TASK_PROC -->|Modo Online| WIFI_MQTT
+                FLASH_MGR -->|Reconexão FIFO| WIFI_MQTT
+            end
+
+            FLASH_MEM["Memória Flash SPI Integrada (8 MB)"]
+            RADIO_LORA["Transceptor LoRa SX1262 (915 MHz)"]
+            
+            FLASH_MGR <--> FLASH_MEM
+            RADIO_LORA <--> LORA_RX
         end
 
-        WIFI_MQTT_MGR -->|Publicação MQTT QoS 1| WIFI_INFRA --> BROKER_MQTT
-        SX1262_NODE <-.->|LoRa 915 MHz (Beacon, Config, Ping/Pong, Telemetria)| SX1262_GW
+        COND -->|Pulso Digital 3.3V| ISR
+        FONTE -.-> HW_ESP32
     end
 
-    subgraph CAMADA3["CAMADA 3: INFRAESTRUTURA CENTRAL, BACKEND & ANALYTICS"]
-        direction TB
-        subgraph SERVER["Estação de Trabalho / Servidor Local (PCP)"]
-            CLI_TOOL["app/uart_serial.py (CLI & Gateway Driver)\n(Ping Broadcast, Pareamento, Setup, OTA HTTP Server)"]
-            MQTT_SERVICE["app/mqtt_listener.py\n(Ingestão Contínua, Idempotência)"]
-            DATABASE[("Banco de Dados Relacional\n(SQLite / PostgreSQL - SQLAlchemy)")]
-            ANALYTICS["app/analytics.py & scheduler.py\n(Métricas OEE, Peças/Hora, Turnos)"]
-            EXCEL["app/excel_generator.py\n(Relatórios Executivos .XLSX)"]
-            CLOUD_SYNC["app/google_sheets_sync.py\n(Sincronização em Nuvem)"]
+    subgraph REDE["CAMADA 2: CONECTIVIDADE & ROTEAMENTO"]
+        WIFI_NET["Rede Wi-Fi Industrial (2.4 GHz WPA2)"]
+        BROKER["Broker MQTT: Eclipse Mosquitto / EMQX"]
+        WIFI_MQTT -->|Publicação MQTT QoS 1| WIFI_NET --> BROKER
+    end
 
-            SERIAL_BRIDGE <-->|USB / VCP (Comandos JSON)| CLI_TOOL
-            BROKER_MQTT -->|Subscrição MQTT| MQTT_SERVICE
-            MQTT_SERVICE --> DATABASE
-            DATABASE --> ANALYTICS --> EXCEL
-            DATABASE --> CLOUD_SYNC
+    subgraph BACKEND["CAMADA 3: INFRAESTRUTURA CENTRAL"]
+        subgraph HW_SERVER["Servidor Local / Workstation (UPS)"]
+            GW_LORA["Gateway Mestre LoRa USB\n(Beacon Temporal 915 MHz)"]
+            INGESTOR["Ingestor Python 3 (Paho-MQTT)"]
+            ORM["Camada de Acesso a Dados (SQLAlchemy)"]
+            DB[("Banco de Dados Relacional\n(PostgreSQL / SQLite)")]
+            REPORTS["Motor de Relatórios (Pandas + OpenPyXL)"]
+            PCP["Arquivos .XLSX / Dashboard PCP"]
+            
+            GW_LORA -.->|Beacon LoRa| RADIO_LORA
+            BROKER -->|Subscrição MQTT| INGESTOR
+            INGESTOR --> ORM --> DB
+            DB --> REPORTS --> PCP
         end
     end
 ```
@@ -306,20 +284,27 @@ EdgeBench/
 │       ├── serial_bridge.c/.h                 # Ponte serial UART bidirecional (Parser JSON <-> Comandos LoRa)
 │       └── nvs_config.c/.h                    # Persistência de credenciais mestres de Wi-Fi e Broker
 ├── app/                                       # Backend de Ingestão, Painel Serial e Analítica (Python)
-│   ├── uart_serial.py                         # Painel interativo CLI (Ping Broadcast, Pareamento, OTA Server)
 │   ├── main.py                                # Ponto de entrada consolidado dos serviços Python
-│   ├── mqtt_listener.py                       # Ingestor MQTT multithread com prevenção de duplicatas
-│   ├── config.py                              # Centralização de configuração via variáveis de ambiente (.env)
-│   ├── database.py / models.py                # Camada ORM (SQLAlchemy) e modelos relacionais
-│   ├── excel_generator.py                     # Geração automatizada de planilhas executivas (.xlsx) por turno
-│   ├── analytics.py                           # Cálculo de indicadores industriais (peças/hora, OEE, paradas)
-│   ├── google_sheets_sync.py                  # Sincronização de apontamentos em nuvem (Google Sheets)
-│   ├── auth_google.py                         # Autenticação OAuth2 / Service Account para APIs Google
-│   ├── scheduler.py                           # Agendador de relatórios e fechamentos de turno fabril
 │   ├── requirements.txt                       # Dependências Python do projeto
 │   ├── .env.example                           # Modelo de variáveis de ambiente (copiar para .env)
 │   ├── docker-compose.yml                     # Orquestração: Mosquitto + PostgreSQL + Backend
 │   ├── Dockerfile                             # Contêiner multi-stage do backend de dados
+│   ├── api/                                   # Rotas REST e API
+│   │   └── main.py                            # Ponto de entrada da API
+│   ├── settings/                              # Configurações Globais e Banco de Dados
+│   │   ├── config.py                          # Configurações via variáveis de ambiente (.env)
+│   │   ├── database.py                        # Conexão com banco de dados
+│   │   └── models.py                          # Modelos relacionais (SQLAlchemy)
+│   ├── hardware_comunication/                 # Comunicação com hardware (LoRa, MQTT, UART)
+│   │   ├── mqtt_listener.py                   # Ingestor MQTT multithread
+│   │   └── uart_serial.py                     # Painel interativo CLI
+│   ├── external_integrations/                 # Integrações externas (Google Drive, Sheets)
+│   │   ├── auth_google.py                     # Autenticação Google
+│   │   └── google_sheets_sync.py              # Sincronização de dados em nuvem
+│   ├── services/                              # Serviços de processamento de dados e rotinas
+│   │   ├── analytics.py                       # Indicadores industriais
+│   │   ├── excel_generator.py                 # Geração de planilhas
+│   │   └── scheduler.py                       # Agendador de tarefas em segundo plano
 │   └── mosquitto/
 │       └── mosquitto.conf                     # Configuração do broker Mosquitto (listeners, persistência)
 └── requisitos/
@@ -336,9 +321,9 @@ EdgeBench/
 | **Botão de Setup Rápido** | [`firmware/main/button_manager.c`](firmware/main/button_manager.c) | Toque curto (<1.5s) e toque longo (>3s) para anúncio de pareamento. |
 | **Gateway Mestre LoRa** | [`firmware_central/main/lora_transmitter.c`](firmware_central/main/lora_transmitter.c) | Transmissão de comandos de rádio e escuta RX contínua na Central. |
 | **Ponte Serial UART** | [`firmware_central/main/serial_bridge.c`](firmware_central/main/serial_bridge.c) | Tradução bidirecional entre comandos JSON serial e pacotes RF. |
-| **Painel Serial & Driver** | [`app/uart_serial.py`](app/uart_serial.py) | Menu com 11 funções (Ping Broadcast, Pareamento, Servidor HTTP OTA). |
-| **Ingestor de Telemetria** | [`app/mqtt_listener.py`](app/mqtt_listener.py) | Ingestão MQTT com chave única `(bench_id, timestamp)` para idempotência. |
-| **Configuração Centralizada** | [`app/config.py`](app/config.py) | Leitura de variáveis de ambiente (`.env`) com defaults seguros. |
+| **Painel Serial & Driver** | [`app/hardware_comunication/uart_serial.py`](app/hardware_comunication/uart_serial.py) | Menu com 11 funções (Ping Broadcast, Pareamento, Servidor HTTP OTA). |
+| **Ingestor de Telemetria** | [`app/hardware_comunication/mqtt_listener.py`](app/hardware_comunication/mqtt_listener.py) | Ingestão MQTT com chave única `(bench_id, timestamp)` para idempotência. |
+| **Configuração Centralizada** | [`app/settings/config.py`](app/settings/config.py) | Leitura de variáveis de ambiente (`.env`) com defaults seguros. |
 
 ---
 
@@ -470,7 +455,7 @@ edgebench_backend     Up
 
 > **Nota:** O broker MQTT Mosquitto é iniciado automaticamente pelo Docker Compose e estará disponível na porta `1883`. As bancadas precisam do IP desta máquina como URL do broker (ex: `mqtt://192.168.1.100:1883`).
 
-### 7.6 Iniciar o Painel Serial CLI (`app/uart_serial.py`)
+### 7.6 Iniciar o Painel Serial CLI (`app/hardware_comunication/uart_serial.py`)
 
 O Painel Serial é a ferramenta de linha de comando que controla a Central Gateway para configuração das bancadas.
 
@@ -494,7 +479,7 @@ pip install -r requirements.txt
 
 **2. Execute o painel (com a Central Gateway conectada via USB):**
 ```bash
-python uart_serial.py
+python hardware_comunication/uart_serial.py
 ```
 
 **Saída esperada (menu interativo):**

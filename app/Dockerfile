@@ -36,6 +36,10 @@ COPY --from=builder /install /usr/local
 # Copia o código-fonte da aplicação
 COPY *.py .env.example ./
 COPY api/ ./api/
+COPY external_integrations/ ./external_integrations/
+COPY hardware_comunication/ ./hardware_comunication/
+COPY services/ ./services/
+COPY settings/ ./settings/
 
 # Cria diretório de relatórios com permissão de escrita
 RUN mkdir -p /app/reports && chmod 755 /app/reports
@@ -62,7 +66,7 @@ VOLUME ["/app/reports"]
 
 # Healthcheck: verifica se o processo Python está vivo
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD python -c "from database import check_connection; exit(0 if check_connection() else 1)"
+    CMD python -c "from settings.database import check_connection; exit(0 if check_connection() else 1)"
 
 # Ponto de entrada padrão: modo ingestão MQTT contínua
 CMD ["python", "main.py"]

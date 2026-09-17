@@ -1,20 +1,23 @@
 """
-config.py — Centralização de configurações via variáveis de ambiente.
-
-Carrega automaticamente um arquivo `.env` na raiz do projeto (se existir),
-permitindo sobrescrita sem alterar o código-fonte.
+Configurações do Sistema.
+Lê as variáveis do arquivo .env para configurar banco de dados, MQTT e Google Drive.
 """
 
 import os
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
-load_dotenv()  # Carrega variáveis do arquivo .env (se presente)
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_dotenv_path = os.path.join(BASE_DIR, ".env")
+if os.path.exists(_dotenv_path):
+    load_dotenv(_dotenv_path)
+else:
+    load_dotenv()  # Lê o arquivo .env do diretório de trabalho se ele existir
 
 
 @dataclass(frozen=True)
 class DatabaseConfig:
-    """Parâmetros de conexão com o PostgreSQL."""
+    """Configurações do banco de dados PostgreSQL."""
 
     host: str = field(default_factory=lambda: os.getenv("POSTGRES_HOST", "localhost"))
     port: int = field(default_factory=lambda: int(os.getenv("POSTGRES_PORT", "5432")))
@@ -26,7 +29,10 @@ class DatabaseConfig:
 
     @property
     def url(self) -> str:
-        """Retorna a DSN completa para o SQLAlchemy."""
+        """Monta a URL de conexão do banco."""
+        env_url = os.getenv("DATABASE_URL")
+        if env_url:
+            return env_url
         return (
             f"postgresql+psycopg2://{self.user}:{self.password}"
             f"@{self.host}:{self.port}/{self.name}"
@@ -35,7 +41,7 @@ class DatabaseConfig:
 
 @dataclass(frozen=True)
 class MQTTConfig:
-    """Parâmetros de conexão com o broker MQTT."""
+    """Configurações do servidor de mensagens MQTT."""
 
     host: str = field(default_factory=lambda: os.getenv("MQTT_HOST", "localhost"))
     port: int = field(default_factory=lambda: int(os.getenv("MQTT_PORT", "1883")))
@@ -57,26 +63,34 @@ class MQTTConfig:
 
 @dataclass(frozen=True)
 class AppConfig:
-    """Configurações gerais da aplicação."""
+    """Outras configurações gerais."""
 
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
-    reports_dir: str = field(default_factory=lambda: os.getenv("REPORTS_DIR", "reports"))
+    reports_dir: str = field(
+        default_factory=lambda: os.getenv("REPORTS_DIR", os.path.join(BASE_DIR, "reports"))
+    )
 
 
-# ── Instâncias prontas para importação ───────────────────────────────────────
+# Instâncias prontas para usar no resto do código
 db_config = DatabaseConfig()
 mqtt_config = MQTTConfig()
 app_config = AppConfig()
 
 @dataclass(frozen=True)
 class GoogleConfig:
-    """Configurações de integração com Google Sheets/Drive."""
+    """Configurações da nuvem do Google."""
 
     credentials_path: str = field(
-        default_factory=lambda: os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "credentials.json")
+        default_factory=lambda: os.getenv(
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            os.path.join(BASE_DIR, "credentials.json") if os.path.exists(os.path.join(BASE_DIR, "credentials.json")) else "credentials.json"
+        )
     )
     token_path: str = field(
-        default_factory=lambda: os.getenv("GOOGLE_TOKEN_PATH", "/app/token.json" if os.path.exists("/app") else "token.json")
+        default_factory=lambda: os.getenv(
+            "GOOGLE_TOKEN_PATH",
+            "/app/token.json" if os.path.exists("/app/token.json") else os.path.join(BASE_DIR, "token.json")
+        )
     )
     folder_id: str = field(default_factory=lambda: os.getenv("GOOGLE_DRIVE_FOLDER_ID", ""))
 

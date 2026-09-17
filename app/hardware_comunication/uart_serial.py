@@ -1,10 +1,6 @@
 """
-Módulo de Comunicação Serial entre um computador e um ESP32
-
-Permite:
-1. Sincronizar o relógio do ESP32 em uma bancada com o horário do PC
-2. Enviar comandos pelo ar (mudança de Wi-Fi, Broker MQTT e ID da Bancada)
-3. Testar a conectividade e monitorar a o status do ESP32 via porta serial
+Ponte Serial (Computador <-> Placa Central).
+Permite configurar as placas, ver o que está acontecendo e mandar comandos pelo ar (LoRa).
 """
 
 import http.server
@@ -39,10 +35,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("EdgeBench_Serial")
 
-# garante que o módulo config da pasta app seja importável
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Garante que a gente consiga importar as configs da pasta app
+APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
+
 try:
-    from config import mqtt_config
+    from settings.config import mqtt_config
     DEFAULT_MQTT_HOST = mqtt_config.host
     DEFAULT_MQTT_PORT = mqtt_config.port
 except Exception:
@@ -50,12 +49,12 @@ except Exception:
     DEFAULT_MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 
 DEFAULT_BUILD_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "firmware", "build")
+    os.path.join(os.path.dirname(__file__), "..", "..", "firmware", "build")
 )
 
 
 class LocalOTAServer:
-    """Servidor HTTP local em background para servir o binário firmware.bin para OTA"""
+    """Servidor web simples que entrega o arquivo de atualização pras placas."""
 
     def __init__(self, directory: str = DEFAULT_BUILD_DIR, port: int = 8080):
         self.directory = directory
@@ -126,7 +125,7 @@ class LocalOTAServer:
 
 
 class EdgeBenchGateway:
-    """classe responsável por gerenciar a comunicação serial com o ESP32"""
+    """Gerencia a conversa via cabo USB com a placa central."""
 
     def __init__(self, port: Optional[str] = None, baudrate: int = 115200, timeout: float = 2.0):
         self.port = port
@@ -145,14 +144,14 @@ class EdgeBenchGateway:
 
     @staticmethod
     def list_available_ports() -> List[str]:
-        # lista todas as portas seriais disponíveis no sistema operacional
+        # Lista os cabos seriais conectados
         if serial is None:
             return []
         ports = serial.tools.list_ports.comports()
         return [p.device for p in ports]
 
     def auto_detect_port(self) -> Optional[str]:
-        # tenta identificar a porta serial conectada ao ESP32
+        # Acha a placa central sozinha
         if serial is None:
             return None
 
@@ -160,7 +159,7 @@ class EdgeBenchGateway:
         for p in ports:
             desc = (p.description or "").lower()
             hwid = (p.hwid or "").lower()
-            # padrões comuns de identificação do ESP32 (CP210x, CH340, USB JTAG/serial)
+            # Nomes comuns de placas ESP32
             if any(k in desc or k in hwid for k in ["cp210", "ch340", "ch341", "usb-serial", "esp32", "jtag"]):
                 logger.info(f"Porta do ESP32 detectada: {p.device} ({p.description})")
                 return p.device
@@ -172,7 +171,7 @@ class EdgeBenchGateway:
         return None
 
     def connect(self) -> bool:
-        # abre a conexão com a porta serial configurada
+        # Liga o cabo
         if serial is None:
             logger.error("pyserial nao instalado. Impossivel abrir porta serial.")
             return False
@@ -200,7 +199,7 @@ class EdgeBenchGateway:
             self._rx_thread.start()
 
             logger.info(f"Conexao estabelecida com sucesso na porta {self.port}")
-            # sincroniza o relógio da Central automaticamente ao conectar
+            # Já acerta o relógio logo de cara
             logger.info("Sincronizando horario da Central automaticamente...")
             self.sync_time()
             return True
@@ -237,7 +236,7 @@ class EdgeBenchGateway:
                             msg = j.get("msg")
 
                             if msg_type == "telemetry":
-                                # executa publicação MQTT em thread separada para nunca travar a leitura da serial
+                                # Manda a mensagem pro banco sem travar a leitura do cabo
                                 threading.Thread(target=self._publish_telemetry, args=(j,), daemon=True).start()
                             elif event == "req_time":
                                 logger.info("[EVENT] Central solicitou horario (bancada ou boot). Enviando timestamp do PC...")
@@ -270,14 +269,14 @@ class EdgeBenchGateway:
         count = data.get("count", 0)
         ts = data.get("timestamp", int(time.time()))
 
-        # Formata data legível compatível com o padrão do EdgeBench
+        # Arruma a data
         from datetime import datetime
         try:
             time_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
         except Exception:
             time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Tópico padrão de produção do EdgeBench (escutado pelo backend e dashboard)
+        # Tópico padrão da bancada
         topic = f"fabrica/bancada_{bench_id}/producao"
 
         payload_dict = {
@@ -329,7 +328,7 @@ class EdgeBenchGateway:
         self._stop_event.set()
         if self._rx_thread:
             self._rx_thread.join(timeout=1.0)
-        # fecha a porta serial com segurança
+        # Desliga o cabo
         if self.ser and self.ser.is_open:
             try:
                 self.ser.close()
@@ -346,12 +345,12 @@ class EdgeBenchGateway:
         self.disconnect()
 
     def send_command(self, cmd_dict: Dict[str, Any], wait_response: bool = True) -> Optional[Dict[str, Any]]:
-        # envia um comando formatado em JSON para o ESP32 e aguarda a resposta JSON
+        # Manda um comando e espera a placa responder
         if not self.ser or not self.ser.is_open:
             logger.error("Porta serial nao esta aberta")
             return None
 
-        # esvazia respostas residuais anteriores da fila
+        # Limpa o lixo da fila
         while not self._cmd_resp_queue.empty():
             try:
                 self._cmd_resp_queue.get_nowait()
@@ -378,18 +377,15 @@ class EdgeBenchGateway:
             logger.warning(f"Timeout aguardando resposta JSON para o comando '{cmd_dict.get('cmd')}'")
             return None
 
-    # comandos específicos do EdgeBench
+    # Comandos
 
     def ping(self) -> Optional[Dict[str, Any]]:
-        # testa se o ESP32 Gateway está online
+        # Verifica se a placa conectada está viva
         logger.info("Enviando comando PING (Gateway Local)")
         return self.send_command({"cmd": "ping"})
 
     def ping_broadcast(self, wait_seconds: float = 3.5) -> List[Dict[str, Any]]:
-        """
-        Dispara comando de Ping em Broadcast via rádio LoRa para todas as bancadas no alcance.
-        Coleta respostas PONG durante 'wait_seconds' e retorna lista com as bancadas encontradas.
-        """
+        """Grita pra todo mundo na fábrica e anota quem respondeu (Ping)."""
         logger.info("Disparando PING Broadcast via LoRa...")
         while not self._pong_queue.empty():
             try:
@@ -412,14 +408,17 @@ class EdgeBenchGateway:
                 if mac and mac not in seen_macs:
                     seen_macs.add(mac)
                     nodes.append(data)
-                    logger.info(f"Resposta PONG -> Bancada ID: {data.get('bench_id')}, MAC: {mac}")
+                    b_id = data.get("bench_id", 0)
+                    status_str = "Configurada" if b_id > 0 else "NÃO CONFIGURADA"
+                    logger.info(f"Resposta PONG -> Bancada ID: {b_id}, MAC: {mac} ({status_str})")
+                    print(f"  [+] Resposta #{len(nodes)} recebida: Bancada ID {b_id:<4} | MAC: {mac} ({status_str})")
             except queue.Empty:
                 pass
 
         return nodes
 
     def is_alive(self) -> bool:
-        """Verifica se a porta serial e a thread de recepção continuam ativas."""
+        """Verifica se o cabo USB ainda está funcionando."""
         return (
             self.ser is not None
             and self.ser.is_open
@@ -716,14 +715,33 @@ def interactive_menu(port: Optional[str] = None):
             elif choice == "7":
                 target_str = input("Digite o ID da bancada a consultar (1 a 65535, ou 0 para todas): ").strip()
                 if target_str.isdigit():
-                    res = gw.get_bench_info(int(target_str))
+                    tid = int(target_str)
+                    res = gw.get_bench_info(tid)
                     print(f"-> Resposta do Gateway: {res}")
-                    print("[INFO] Aguardando resposta LoRa da bancada (2.5s)...")
-                    try:
-                        info = gw._bench_info_queue.get(timeout=2.5)
-                        print(f"[DESCOBERTA] -> Bancada ID: {info.get('bench_id')}, MAC: {info.get('mac')}")
-                    except queue.Empty:
-                        print("[AVISO] Nenhuma resposta recebida da bancada no tempo limite.")
+                    if tid == 0:
+                        print("[INFO] Aguardando respostas LoRa de todas as bancadas (3.0s)...")
+                        seen_macs = set()
+                        start_t = time.time()
+                        count = 0
+                        while (time.time() - start_t) < 3.0:
+                            try:
+                                info = gw._bench_info_queue.get(timeout=0.1)
+                                mac = info.get("mac")
+                                if mac and mac not in seen_macs:
+                                    seen_macs.add(mac)
+                                    count += 1
+                                    print(f"  [+] [DESCOBERTA #{count}] -> Bancada ID: {info.get('bench_id')}, MAC: {mac}")
+                            except queue.Empty:
+                                pass
+                        if count == 0:
+                            print("[AVISO] Nenhuma resposta recebida no tempo limite.")
+                    else:
+                        print(f"[INFO] Aguardando resposta LoRa da bancada ID {tid} (2.5s)...")
+                        try:
+                            info = gw._bench_info_queue.get(timeout=2.5)
+                            print(f"[DESCOBERTA] -> Bancada ID: {info.get('bench_id')}, MAC: {info.get('mac')}")
+                        except queue.Empty:
+                            print(f"[AVISO] Nenhuma resposta recebida da bancada ID {tid} no tempo limite")
             elif choice == "8":
                 print("\n" + "=" * 65)
                 print(f" [MONITOR SERIAL CONTÍNUO] Escutando porta {gw.port or 'serial'}")
