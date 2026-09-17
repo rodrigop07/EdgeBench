@@ -1,9 +1,7 @@
 {
     "idf.currentSetup": "/home/ezparza/.espressif/v5.5.5/esp-idf",
     "idf.projectDir": "${workspaceFolder}/firmware",
-    "idf.openOcdConfigs": [
-        "board/esp32s3-builtin.cfg"
-    ],
+    "idf.openOcdConfigs": ["board/esp32s3-builtin.cfg"],
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32s3"
     },
@@ -26,5 +24,7 @@
         "editor.insertSpaces": true,
         "editor.detectIndentation": false
     },
-    "idf.port": "/dev/ttyUSB0"
+    "idf.port": "/dev/ttyUSB0",
+    "idf.portWin": "COM3",
+    "cmake.sourceDirectory": "C:/Users/bruno/Desktop/EdgeBench/firmware"
 }

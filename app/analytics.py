@@ -91,10 +91,13 @@ def load_telemetry_df(
         logger.warning("Nenhum registro encontrado com os filtros aplicados.")
         return df
 
-    # Tipagem e campos derivados
-    df["timestamp_esp"] = pd.to_datetime(df["timestamp_esp"]).dt.tz_localize(None)
-    df["timestamp_servidor"] = pd.to_datetime(df["timestamp_servidor"], utc=True).dt.tz_localize(None)
+    # Tipagem, conversão de fuso horário e campos derivados
+    # O banco salva em UTC (e.g. 16:45), nós convertemos para o fuso local (13:45) para a interface/relatório
+    df["timestamp_esp"] = pd.to_datetime(df["timestamp_esp"]).dt.tz_localize("UTC").dt.tz_convert("America/Sao_Paulo").dt.tz_localize(None)
+    df["timestamp_servidor"] = pd.to_datetime(df["timestamp_servidor"], utc=True).dt.tz_convert("America/Sao_Paulo").dt.tz_localize(None)
     df["hora"] = df["timestamp_esp"].dt.hour
+    df["minuto_10"] = (df["timestamp_esp"].dt.minute // 10) * 10
+    df["hora_10m"] = df.apply(lambda row: f"{int(row['hora']):02d}:{int(row['minuto_10']):02d}", axis=1)
     df["data"] = df["timestamp_esp"].dt.date
     df["turno"] = df["hora"].apply(_classify_shift)
 
@@ -123,27 +126,48 @@ def detect_idleness(df: pd.DataFrame, threshold_minutes: int = 15) -> Tuple[pd.D
         total_paradas = 0
         tempo_total_min = 0.0
 
-        if len(prod_group) >= 2:
+        if len(prod_group) >= 1:
             timestamps = prod_group["timestamp_esp"].values
-            for i in range(1, len(timestamps)):
-                t_prev = pd.to_datetime(timestamps[i - 1])
-                t_curr = pd.to_datetime(timestamps[i])
-                delta = t_curr - t_prev
+            
+            # Verifica paradas entre mensagens
+            if len(timestamps) >= 2:
+                for i in range(1, len(timestamps)):
+                    t_prev = pd.to_datetime(timestamps[i - 1])
+                    t_curr = pd.to_datetime(timestamps[i])
+                    delta = t_curr - t_prev
 
-                # Intervalo > 15 min e menor que 12 horas (ignora desligamento noturno de linha)
-                if delta > threshold and delta < pd.Timedelta(hours=12):
-                    duracao_min = round(delta.total_seconds() / 60.0, 1)
-                    total_paradas += 1
-                    tempo_total_min += duracao_min
+                    if delta > threshold and delta < pd.Timedelta(hours=12):
+                        duracao_min = round(delta.total_seconds() / 60.0, 1)
+                        total_paradas += 1
+                        tempo_total_min += duracao_min
 
-                    downtimes.append({
-                        "bancada_id": bancada,
-                        "inicio_parada": t_prev.strftime("%d/%m/%Y %H:%M:%S"),
-                        "fim_parada": t_curr.strftime("%d/%m/%Y %H:%M:%S"),
-                        "duracao_minutos": duracao_min,
-                        "classificacao": "Parada Operacional (>15 min)",
-                        "impacto_estimado": f"{int(duracao_min * 0.5)} peças não produzidas",
-                    })
+                        downtimes.append({
+                            "bancada_id": bancada,
+                            "inicio_parada": t_prev.strftime("%d/%m/%Y %H:%M:%S"),
+                            "fim_parada": t_curr.strftime("%d/%m/%Y %H:%M:%S"),
+                            "duracao_minutos": duracao_min,
+                            "classificacao": "Parada Operacional (>15 min)",
+                            "impacto_estimado": f"{int(duracao_min * 0.5)} peças não produzidas",
+                        })
+
+            # Verifica parada atual (da última mensagem até agora)
+            t_last = pd.to_datetime(timestamps[-1])
+            now = pd.Timestamp.now()
+            delta_now = now - t_last
+            
+            if delta_now > threshold and delta_now < pd.Timedelta(hours=12):
+                duracao_min = round(delta_now.total_seconds() / 60.0, 1)
+                total_paradas += 1
+                tempo_total_min += duracao_min
+
+                downtimes.append({
+                    "bancada_id": bancada,
+                    "inicio_parada": t_last.strftime("%d/%m/%Y %H:%M:%S"),
+                    "fim_parada": "Até o momento",
+                    "duracao_minutos": duracao_min,
+                    "classificacao": "Parada Atual (>15 min)",
+                    "impacto_estimado": f"{int(duracao_min * 0.5)} peças não produzidas",
+                })
 
         summary[str(bancada)] = {
             "count": total_paradas,
@@ -219,6 +243,22 @@ def aggregate_by_hour(df: pd.DataFrame) -> pd.DataFrame:
     return grp
 
 
+def aggregate_by_10min(df: pd.DataFrame) -> pd.DataFrame:
+    """Agrega produção por bancada em intervalos de 10 minutos."""
+    if df.empty:
+        return pd.DataFrame()
+
+    grp = (
+        df.groupby(["bancada_id", "data", "hora_10m"])
+        .agg(
+            total_pecas=("delta_pecas", "sum"),
+        )
+        .reset_index()
+    )
+    grp = grp.sort_values(["bancada_id", "data", "hora_10m"])
+    return grp
+
+
 def aggregate_by_shift(df: pd.DataFrame) -> pd.DataFrame:
     """Agrega produção por bancada e turno com percentual de eficiência formatável."""
     if df.empty:
@@ -261,20 +301,6 @@ def compute_kpis(df: pd.DataFrame, idleness_summary: Optional[Dict[str, Dict[str
         .reset_index()
     )
 
-    # Uptime: % de mensagens com status OPERANDO
-    operando_df = df[df["status_bancada"] == "OPERANDO"]
-    operando_count = (
-        operando_df.groupby("bancada_id")["id"]
-        .count()
-        .rename("msgs_operando")
-        .reset_index()
-    )
-    kpis = kpis.merge(operando_count, on="bancada_id", how="left")
-    kpis["msgs_operando"] = kpis["msgs_operando"].fillna(0)
-    kpis["uptime_pct"] = ((kpis["msgs_operando"] / kpis["total_mensagens"]) * 100).round(1)
-    kpis["media_delta"] = kpis["media_delta"].round(2)
-    kpis = kpis.drop(columns=["msgs_operando"])
-
     # Incorpora métricas de paradas operacionais
     if idleness_summary:
         kpis["paradas"] = kpis["bancada_id"].apply(
@@ -286,6 +312,17 @@ def compute_kpis(df: pd.DataFrame, idleness_summary: Optional[Dict[str, Dict[str
     else:
         kpis["paradas"] = 0
         kpis["tempo_parado_min"] = 0.0
+
+    # Tempo total decorrido desde o início
+    now = pd.Timestamp.now()
+    kpis["tempo_total_min"] = (now - kpis["primeiro_registro"]).dt.total_seconds() / 60.0
+    
+    # Uptime (% de tempo ativo vs parado)
+    kpis["uptime_pct"] = kpis.apply(
+        lambda row: round(max(0, 100.0 - (row["tempo_parado_min"] / row["tempo_total_min"]) * 100), 1) if row["tempo_total_min"] > 0 else 100.0,
+        axis=1
+    )
+    kpis["media_delta"] = kpis["media_delta"].round(2)
 
     # Calcula taxa de peças por hora para a bancada (com base no primeiro e último registro)
     kpis["horas_ativas"] = (kpis["ultimo_registro"] - kpis["primeiro_registro"]).dt.total_seconds() / 3600.0
@@ -336,6 +373,7 @@ def full_report(
         "kpis": compute_kpis(df, idleness_summary),
         "por_hora_pivot": aggregate_hourly_pivot(df),
         "por_hora": aggregate_by_hour(df),
+        "por_10m": aggregate_by_10min(df),
         "por_turno": aggregate_by_shift(df),
         "ociosidade": downtimes_df,
     }

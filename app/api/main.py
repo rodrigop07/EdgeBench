@@ -78,28 +78,27 @@ def get_current_status(db: Session = Depends(get_db)):
                     "taxa_pecas_hora": float(row.get("taxa_pecas_hora", 0.0))
                 })
                 
-        # 3. Gráfico por Hora (Global e Por Bancada)
-        por_hora_df = data.get("por_hora")
+        # 3. Gráfico por 10 minutos (Global e Por Bancada)
+        por_10m_df = data.get("por_10m")
         grafico_hora = []
         grafico_hora_bancadas = {}
         
-        if por_hora_df is not None and not por_hora_df.empty:
+        if por_10m_df is not None and not por_10m_df.empty:
             # Global
-            hora_agg = por_hora_df.groupby("hora")["total_pecas"].sum().reset_index()
+            hora_agg = por_10m_df.groupby("hora_10m")["total_pecas"].sum().reset_index()
             for _, row in hora_agg.iterrows():
-                hora_str = f"{int(row['hora']):02d}:00"
                 grafico_hora.append({
-                    "hora": hora_str,
+                    "hora": row["hora_10m"],
                     "pecas": int(row["total_pecas"])
                 })
                 
             # Por Bancada
-            for bancada, group in por_hora_df.groupby("bancada_id"):
-                b_hora_agg = group.groupby("hora")["total_pecas"].sum().reset_index()
+            for bancada, group in por_10m_df.groupby("bancada_id"):
+                b_hora_agg = group.groupby("hora_10m")["total_pecas"].sum().reset_index()
                 g_list = []
                 for _, row in b_hora_agg.iterrows():
                     g_list.append({
-                        "hora": f"{int(row['hora']):02d}:00",
+                        "hora": row["hora_10m"],
                         "pecas": int(row["total_pecas"])
                     })
                 grafico_hora_bancadas[str(bancada)] = g_list
@@ -145,6 +144,39 @@ def list_reports():
     except Exception as e:
         logger.error(f"Erro ao buscar relatórios do Drive: {e}")
         return {"success": False, "reports": []}
+
+@app.post("/api/reports/generate")
+def generate_report():
+    """
+    Gera um relatório na hora e faz upload para o Google Sheets/Drive.
+    """
+    try:
+        import time
+        from analytics import full_report
+        from excel_generator import generate_excel_report
+        from google_sheets_sync import upload_to_sheets
+        
+        # 1. Gera o Excel na pasta local (reports/)
+        data = full_report(bancada_id=None, start_dt=None, end_dt=None)
+        path = generate_excel_report(report_data=data, output_path=None)
+        
+        # 2. Faz o upload para o Google Sheets
+        sheet_title = f"EdgeBench_Consolidado_{time.strftime('%Y-%m-%d_%H%M%S')}"
+        result = upload_to_sheets(
+            excel_filepath=path,
+            sheet_name=sheet_title,
+            convert_to_sheets=True,
+            update_if_exists=False,
+        )
+        
+        if result and result.get("web_view_link"):
+            return {"success": True, "link": result["web_view_link"]}
+        else:
+            return {"success": False, "error": "Falha ao enviar para o Google Drive."}
+            
+    except Exception as e:
+        logger.error(f"Erro ao gerar relatório sob demanda: {e}")
+        return {"success": False, "error": str(e)}
 
 @app.get("/api/reports/download/{filename}")
 def download_report(filename: str):
