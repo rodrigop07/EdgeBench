@@ -286,6 +286,75 @@ graph LR
 > **NUNCA ligue a placa ou execute rotinas de transmissão de rádio LoRa sem a antena devidamente conectada!**  
 > Transmitir sinal de radiofrequência com a saída em circuito aberto (sem a terminação de carga casada de 50 Ω da antena) provoca a reflexão total da onda eletromagnética (*alto VSWR*). Essa energia refletida superaquece e resulta na **queima imediata e irreversível do amplificador de potência de RF (*Power Amplifier - PA*) integrado ao chip Semtech SX1262**.
 
+### 3.4 Esquemático Elétrico Integrado do Nó de Bancada
+
+O diagrama esquemático a seguir consolida todas as interligações de sinal, alimentação, barramentos digitais e radiofrequência do nó de sensoriamento de bancada:
+
+```mermaid
+flowchart LR
+    subgraph ALIM["ALIMENTAÇÃO EXTERNA"]
+        FONTE["Fonte Chaveada 5V DC / 1A"]
+        GND_EXT["GND Comum (Terra)"]
+    end
+
+    subgraph SENSOR["SENSOR ÓPTICO INDUSTRIAL E18-D80NK"]
+        VCC_S["Fio Marrom (VCC 5V)"]
+        GND_S["Fio Azul (GND)"]
+        NPN_OUT["Transistor NPN Coletor Aberto\nFio Preto (Sinal OUT)"]
+    end
+
+    subgraph HELTEC["PLACA HELTEC WIFI LORA 32 V3"]
+        subgraph POWER_RAILS["Linhas de Alimentação"]
+            PIN_5V["Pino 5V / VBUS"]
+            REG_3V3["Regulador LDO 3.3V Onboard"]
+            PIN_GND["Pino GND"]
+            PIN_5V --> REG_3V3
+        end
+
+        subgraph ESP32S3["Microcontrolador ESP32-S3FN8"]
+            GPIO48["GPIO 48 (Input Pull-up 45kΩ)\nInterrupção Externa (ISR / Falling Edge)"]
+            GPIO35["GPIO 35 (Output Push-Pull)"]
+            GPIO0["GPIO 0 (Input Pull-up)"]
+            
+            subgraph SPI_BUS["Barramento SPI Dedicado"]
+                GPIO8["GPIO 8 (NSS / CS)"]
+                GPIO9["GPIO 9 (SCK)"]
+                GPIO10["GPIO 10 (MOSI)"]
+                GPIO11["GPIO 11 (MISO)"]
+                GPIO12["GPIO 12 (RST)"]
+                GPIO13["GPIO 13 (BUSY)"]
+                GPIO14["GPIO 14 (DIO1 IRQ)"]
+            end
+        end
+
+        subgraph ONBOARD_UI["Interface de Usuário Onboard"]
+            LED["LED Branco Onboard (GPIO 35)"]
+            BTN["Botão PRG Onboard (GPIO 0)"]
+            GPIO35 --> LED
+            BTN --> GPIO0
+        end
+
+        subgraph RF_STAGE["Subcircuito de Rádio SX1262"]
+            SX1262["Transceptor Semtech SX1262 (915 MHz)"]
+            IPEX_CONN["Soquete Coaxial Micro IPEX / U.FL"]
+            SPI_BUS <--> SX1262
+            SX1262 <--> IPEX_CONN
+        end
+    end
+
+    subgraph ANT_SYSTEM["SISTEMA IRRADIANTE DE RF"]
+        PIGTAIL["Cabo Pigtail RG178 (50 Ohms)\nPlugue U.FL ➔ Conector SMA Fêmea"]
+        ANT_SMA["Antena Chicote 915 MHz 50Ω (SMA Macho)"]
+        IPEX_CONN --- PIGTAIL --- ANT_SMA
+    end
+
+    FONTE --> PIN_5V
+    GND_EXT --> PIN_GND
+    PIN_5V --> VCC_S
+    PIN_GND --> GND_S
+    NPN_OUT -->|Sinal Lógico 0V / 3.3V| GPIO48
+```
+
 ---
 
 ## 4. Protocolo de Comunicação LoRa (EdgeBench RF)
