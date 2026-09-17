@@ -69,7 +69,7 @@ Esta seção lista **tudo** o que é necessário para reproduzir o projeto do ze
 
 A arquitetura do **EdgeBench** é estruturada em três camadas integradas, segregando claramente as responsabilidades de hardware, firmware de tempo real, comunicação por radiofrequência e serviços de dados na nuvem/servidor.
 
-### 2.1 Diagrama Geral de Arquitetura
+### 2.1 Diagrama Geral de Arquitetura Ponta a Ponta
 
 ```mermaid
 flowchart TD
@@ -79,27 +79,31 @@ flowchart TD
         PECA["Peça Montada (Passagem Física)"] --> CALHA["Calha de Saída por Gravidade"]
         CALHA --> SENSOR["Sensor Fotoelétrico E18-D80NK\n(Saída NPN Coletor Aberto 5V)"]
         FONTE["Fonte Chaveada 5V 2A\n(Filtro EMI)"] -.-> SENSOR
-        SENSOR --> COND["Condicionador de Sinal\n(Divisor Resistivo / Optoacoplador PC817)"]
+        SENSOR --> COND["Condicionador de Sinal\n(Pull-Up Interno 3.3V)"]
         
         subgraph HW_ESP32["Nó de Borda: Heltec ESP32-S3 LoRa"]
             direction TB
             
             subgraph CORE1["Core 1 (Alta Prioridade / Tempo Real)"]
-                ISR["Tratador de Interrupção Externa (ISR)\n(Borda de Descida / IRAM)"]
-                DEBOUNCE["Filtro de Debounce Temporal (300 ms)"]
+                ISR["Tratador de Interrupção Externa (ISR)\n(Borda de Descida / IRAM / GPIO 48)"]
+                DEBOUNCE["Filtro de Debounce Dinâmico\n(NVS: 10ms - 5000ms)"]
+                LED_PULSE["Feedback Visual LED GPIO 35\n(Pulso 80ms / esp_timer)"]
                 QUEUE_SENS["Fila FreeRTOS de Eventos"]
-                ISR --> DEBOUNCE --> QUEUE_SENS
+                ISR --> DEBOUNCE --> LED_PULSE
+                DEBOUNCE --> QUEUE_SENS
             end
 
             subgraph CORE0["Core 0 (Operação, Armazenamento e Rede)"]
                 TASK_PROC["Tarefa de Processamento e Despacho"]
-                FLASH_MGR["Driver de Persistência Flash\n(SPIFFS / LittleFS)"]
-                WIFI_MQTT["Pilha Wi-Fi & Cliente MQTT (QoS 1)"]
-                LORA_RX["Driver LoRa SX1262\n(Receptor de Beacon)"]
+                FLASH_MGR["Buffer Binário Não-Volátil (LittleFS)\n(8 bytes/registro, 90+ dias offline)"]
+                WIFI_MQTT["Pilha Wi-Fi & Cliente MQTT\n(QoS 1, LWT, Reconexão Auto)"]
+                LORA_RX["Driver LoRa SX1262\n(Pareamento, Config, Ping/Pong, OTA)"]
+                BTN_MGR["Botão PRG GPIO 0\n(Curto: Sync / Longo 3s: Anúncio)"]
                 
                 TASK_PROC -->|Modo Offline| FLASH_MGR
                 TASK_PROC -->|Modo Online| WIFI_MQTT
                 FLASH_MGR -->|Reconexão FIFO| WIFI_MQTT
+                BTN_MGR --> LORA_RX
             end
 
             FLASH_MEM["Memória Flash SPI Integrada (8 MB)"]
@@ -114,27 +118,73 @@ flowchart TD
     end
 
     subgraph REDE["CAMADA 2: CONECTIVIDADE & ROTEAMENTO"]
-        WIFI_NET["Rede Wi-Fi Industrial (2.4 GHz WPA2)"]
-        BROKER["Broker MQTT: Eclipse Mosquitto / EMQX"]
-        WIFI_MQTT -->|Publicação MQTT QoS 1| WIFI_NET --> BROKER
+        WIFI_NET["Rede Wi-Fi Fabril (2.4 GHz WPA2)"]
+        BROKER["Broker MQTT (Eclipse Mosquitto)\n(TCP 1883 / WS 9001)"]
+        WIFI_MQTT -->|Tópicos fabrica/bancada_X/*| WIFI_NET --> BROKER
     end
 
-    subgraph BACKEND["CAMADA 3: INFRAESTRUTURA CENTRAL"]
-        subgraph HW_SERVER["Servidor Local / Workstation (UPS)"]
-            GW_LORA["Gateway Mestre LoRa USB\n(Beacon Temporal 915 MHz)"]
-            INGESTOR["Ingestor Python 3 (Paho-MQTT)"]
-            ORM["Camada de Acesso a Dados (SQLAlchemy)"]
-            DB[("Banco de Dados Relacional\n(PostgreSQL / SQLite)")]
-            REPORTS["Motor de Relatórios (Pandas + OpenPyXL)"]
-            PCP["Arquivos .XLSX / Dashboard PCP"]
+    subgraph BACKEND["CAMADA 3: SERVIÇOS, ANALÍTICA & SUPERVISÃO"]
+        subgraph LOCAL_HOST["Servidor Local / Docker Host"]
+            GW_CENTRAL["Central Gateway Mestre LoRa\n(Heltec USB + uart_serial.py CLI)"]
+            INGESTOR["Ingestor MQTT Multithread\n(app/hardware_comunication/mqtt_listener.py)"]
+            SCHEDULER["Agendador de Fechamento de Turno\n(06:01, 14:01, 22:01 - scheduler.py)"]
+            DB[("Banco de Dados Relacional\nPostgreSQL (telemetria_bancada)\n[Chave Única de Idempotência]")]
+            ANALYTICS["Motor Analítico & KPIs Industriais\n(OEE, Disponibilidade, Paradas RN-06 - analytics.py)"]
+            API_REST["API REST FastAPI (Porta 8000)\n(api/main.py)"]
+            WEB_DASH["Dashboard Web React + Vite (Porta 5173)\n(app/web - KPIs, Gráficos Recharts)"]
+            EXCEL_GEN["Gerador de Relatórios (.xlsx)\n(excel_generator.py - Multi-abas)"]
             
-            GW_LORA -.->|Beacon LoRa| RADIO_LORA
-            BROKER -->|Subscrição MQTT| INGESTOR
-            INGESTOR --> ORM --> DB
-            DB --> REPORTS --> PCP
+            GW_CENTRAL <-.->|LoRa 915 MHz: Ping / Config / OTA| RADIO_LORA
+            BROKER -->|Subscrição fabrica/+| INGESTOR
+            INGESTOR --> DB
+            SCHEDULER --> ANALYTICS --> EXCEL_GEN
+            DB <--> API_REST
+            API_REST <--> WEB_DASH
+        end
+
+        subgraph CLOUD["Nuvem & Compartilhamento Externo"]
+            GSHEETS["Google Sheets\n(Planilha Mestre Atualizada Online)"]
+            GDRIVE["Google Drive\n(Backups Históricos Imutáveis .xlsx)"]
+            
+            EXCEL_GEN -.->|OAuth2 / Service Account| GSHEETS
+            EXCEL_GEN -.->|Armazenamento Seguro| GDRIVE
+            WEB_DASH -.->|Listagem e Links de Acesso| GDRIVE
         end
     end
 ```
+
+### 2.2 Topologia de Mensagens MQTT e Modelo de Dados
+
+#### Tópicos MQTT da Fábrica
+
+| Tópico | Direção | QoS | Função e Conteúdo |
+| :--- | :---: | :---: | :--- |
+| `fabrica/bancada_<id>/producao` | Nó ➔ Broker | 1 | Eventos de contagem em tempo real e replay do buffer offline: `{"bancada_id": "BC-01", "contagem": 12, "delta_pecas": 1, "timestamp": 1726435200, "modo_offline": false}` |
+| `fabrica/bancada_<id>/status` | Nó ➔ Broker | 1 | Heartbeat periódico e Last Will and Testament (LWT) configurado na inicialização: `{"bancada": 1, "status": "ONLINE"|"OFFLINE"|"PARADO", "timestamp": 1726435200}` |
+| `fabrica/bancada_<id>/ota` | Server ➔ Nó | 1 | Gatilho de atualização OTA HTTP direcionado a uma bancada específica: `{"url": "http://192.168.1.50:8080/firmware.bin"}` |
+| `fabrica/todas/ota` | Server ➔ Broadcast | 1 | Gatilho de atualização OTA HTTP em broadcast para todo o chão de fábrica. |
+
+#### Modelo de Dados e Garantia de Idempotência (PostgreSQL)
+
+Para garantir que retransmissões MQTT (QoS 1) ou o descarregamento em lote de buffers offline (*FIFO replay*) nunca gerem contagens duplicadas no banco central, a tabela `telemetria_bancada` implementa uma chave de idempotência estrita:
+
+```sql
+CREATE TABLE telemetria_bancada (
+    id SERIAL PRIMARY KEY,
+    bancada_id VARCHAR(20) NOT NULL,
+    contagem_total INTEGER NOT NULL,
+    delta_pecas INTEGER NOT NULL DEFAULT 0,
+    timestamp_esp TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    timestamp_servidor TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    status_bancada VARCHAR(30) NOT NULL DEFAULT 'DESCONHECIDO',
+    idempotency_key VARCHAR(120) NOT NULL UNIQUE
+);
+
+CREATE INDEX ix_telemetria_bancada_timestamp ON telemetria_bancada(bancada_id, timestamp_esp);
+```
+
+* **Fórmula da Chave de Idempotência:** `idempotency_key = "{bancada_id}_{timestamp_esp}_{contagem_total}"`.  
+  Qualquer registro repetido é automaticamente descartado pelo banco via cláusula `IntegrityError` no ingestor sem causar falha no processamento.
 
 ---
 
@@ -148,7 +198,7 @@ O projeto adota o kit **Heltec WiFi LoRa 32 V3**, integrando microcontrolador du
 | :--- | :---: | :--- | :--- |
 | **Sensor E18-D80NK (Sinal OUT)** | **GPIO 48** | Entrada com Pull-up interno | Saída NPN coletor aberto (0V na detecção da peça, 3.3V em repouso). |
 | **LED Indicador Onboard** | **GPIO 35** | Saída Digital (Ativo Alto) | Feedback visual imediato de passagem de peça (pulso 80ms) e Ping Broadcast (150ms). |
-| **Botão Físico PRG Onboard** | **GPIO 0** | Entrada com Pull-up interno | Toque curto (<1.5s): sync de hora/config; Toque longo (>3s): anúncio de pareamento. |
+| **Botão Físico PRG Onboard** | **GPIO 0** | Entrada com Pull-up interno | Toque curto (<1.5s): sync de hora/config; Toque médio (>3s): anúncio de pareamento; Toque longo (10s): Factory reset. 
 | **Alimentação do Sensor (VCC)** | **5V / VBUS** | 5V DC | Alimentação positiva do sensor fotoelétrico. |
 | **Referência de Terra (GND)** | **GND** | 0V | Terra comum entre fonte, sensor e microcontrolador. |
 | **LoRa SX1262 NSS** | **GPIO 8** | Saída SPI (Chip Select) | Seleção do chip LoRa via barramento SPI dedicado. |
@@ -287,24 +337,28 @@ EdgeBench/
 │   ├── main.py                                # Ponto de entrada consolidado dos serviços Python
 │   ├── requirements.txt                       # Dependências Python do projeto
 │   ├── .env.example                           # Modelo de variáveis de ambiente (copiar para .env)
-│   ├── docker-compose.yml                     # Orquestração: Mosquitto + PostgreSQL + Backend
-│   ├── Dockerfile                             # Contêiner multi-stage do backend de dados
-│   ├── api/                                   # Rotas REST e API
-│   │   └── main.py                            # Ponto de entrada da API
+│   ├── docker-compose.yml                     # Orquestração: Mosquitto + PostgreSQL + Backend + API + Web
+│   ├── Dockerfile                             # Contêiner multi-stage do backend de dados e API
+│   ├── api/                                   # Camada de Apresentação e Integração REST
+│   │   └── main.py                            # API FastAPI (status em tempo real, OEE, listagem/download de relatórios)
+│   ├── web/                                   # Frontend Web Dashboard Industrial (React 19 + Vite + TypeScript)
+│   │   ├── package.json                       # Scripts e dependências do frontend (Recharts, Lucide)
+│   │   ├── vite.config.ts                     # Configuração do Vite dev server
+│   │   └── src/                               # Componentes, gráficos e dashboard interativo (App.tsx)
 │   ├── settings/                              # Configurações Globais e Banco de Dados
 │   │   ├── config.py                          # Configurações via variáveis de ambiente (.env)
-│   │   ├── database.py                        # Conexão com banco de dados
-│   │   └── models.py                          # Modelos relacionais (SQLAlchemy)
+│   │   ├── database.py                        # Conexão com banco de dados (PostgreSQL/SQLite)
+│   │   └── models.py                          # Modelos relacionais (SQLAlchemy) e chaves de idempotência
 │   ├── hardware_comunication/                 # Comunicação com hardware (LoRa, MQTT, UART)
-│   │   ├── mqtt_listener.py                   # Ingestor MQTT multithread
-│   │   └── uart_serial.py                     # Painel interativo CLI
-│   ├── external_integrations/                 # Integrações externas (Google Drive, Sheets)
-│   │   ├── auth_google.py                     # Autenticação Google
-│   │   └── google_sheets_sync.py              # Sincronização de dados em nuvem
+│   │   ├── mqtt_listener.py                   # Ingestor MQTT multithread com deduplicação
+│   │   └── uart_serial.py                     # Painel interativo CLI para controle do Gateway LoRa
+│   ├── external_integrations/                 # Integrações externas em nuvem (Google Drive, Sheets)
+│   │   ├── auth_google.py                     # Gerenciamento de credenciais e fluxo OAuth2 do Google
+│   │   └── google_sheets_sync.py              # Sincronização automatizada para Google Drive e Google Sheets
 │   ├── services/                              # Serviços de processamento de dados e rotinas
-│   │   ├── analytics.py                       # Indicadores industriais
-│   │   ├── excel_generator.py                 # Geração de planilhas
-│   │   └── scheduler.py                       # Agendador de tarefas em segundo plano
+│   │   ├── analytics.py                       # Indicadores industriais, OEE, paradas RN-06 e turnos T1/T2/T3
+│   │   ├── excel_generator.py                 # Geração de planilhas industriais multi-abas com OpenPyXL
+│   │   └── scheduler.py                       # Agendador de tarefas em segundo plano (fechamento de turnos)
 │   └── mosquitto/
 │       └── mosquitto.conf                     # Configuração do broker Mosquitto (listeners, persistência)
 └── requisitos/
@@ -324,6 +378,13 @@ EdgeBench/
 | **Painel Serial & Driver** | [`app/hardware_comunication/uart_serial.py`](app/hardware_comunication/uart_serial.py) | Menu com 11 funções (Ping Broadcast, Pareamento, Servidor HTTP OTA). |
 | **Ingestor de Telemetria** | [`app/hardware_comunication/mqtt_listener.py`](app/hardware_comunication/mqtt_listener.py) | Ingestão MQTT com chave única `(bench_id, timestamp)` para idempotência. |
 | **Configuração Centralizada** | [`app/settings/config.py`](app/settings/config.py) | Leitura de variáveis de ambiente (`.env`) com defaults seguros. |
+| **Banco de Dados & ORM** | [`app/settings/models.py`](app/settings/models.py) | Schema relacional `telemetria_bancada` com índice composto e idempotência. |
+| **Motor Analítico & OEE** | [`app/services/analytics.py`](app/services/analytics.py) | Agregações de produção por turno (T1, T2, T3), taxas e paradas ociosas (RN-06). |
+| **Geração de Relatórios Excel** | [`app/services/excel_generator.py`](app/services/excel_generator.py) | Planilhas `.xlsx` formatadas para auditoria do PCP com gráficos e métricas. |
+| **Agendador de Fechamentos** | [`app/services/scheduler.py`](app/services/scheduler.py) | Disparo automático no fim de cada turno (06:01, 14:01, 22:01) e backup. |
+| **API REST FastAPI** | [`app/api/main.py`](app/api/main.py) | Endpoints REST (`/api/status`, `/api/reports`) para integração e dashboard. |
+| **Dashboard Web Industrial** | [`app/web/src/App.tsx`](app/web/src/App.tsx) | Interface React moderna com gráficos Recharts e monitoramento em tempo real. |
+| **Nuvem Google Sheets/Drive**| [`app/external_integrations/google_sheets_sync.py`](app/external_integrations/google_sheets_sync.py) | Sincronização da planilha mestre online e arquivo histórico no Drive. |
 
 ---
 
@@ -413,7 +474,7 @@ I (xxx) GATEWAY_CENTRAL: Gateway Central pronto em modo servidor sob demanda (RX
 
 ### 7.5 Configurar e Iniciar os Serviços de Backend (Docker Compose)
 
-O backend (Broker MQTT, Banco de Dados e Ingestor Python) roda em contêineres Docker.
+O ecossistema de software central (Broker MQTT, Banco de Dados, Ingestor/Scheduler, API REST e Dashboard Web) roda orquestrado via Docker Compose em 5 contêineres integrados:
 
 **1. Crie o arquivo de variáveis de ambiente:**
 ```bash
@@ -423,37 +484,62 @@ cp .env.example .env
 
 **2. (Opcional) Edite o `.env` conforme seu ambiente:**
 ```dotenv
-# As variáveis principais e seus valores padrão:
+# Banco de Dados
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
 POSTGRES_DB=edgebench
 POSTGRES_USER=edgebench_user
 POSTGRES_PASSWORD=edgebench_pass
 
+# Broker MQTT
 MQTT_HOST=localhost
 MQTT_PORT=1883
-MQTT_TOPIC_FILTER=fabrica/bancada_+/producao
+MQTT_TOPIC_FILTER=fabrica/+/#
+
+# Integração Google Drive / Sheets (Opcional)
+GOOGLE_APPLICATION_CREDENTIALS=google-credentials.json
+GOOGLE_DRIVE_FOLDER_ID=
 ```
 
 **3. Inicie todos os serviços:**
 ```bash
-docker-compose up -d
+docker-compose up -d --build
 ```
 
-**4. Verifique que os três contêineres estão saudáveis:**
+**4. Verifique que os cinco contêineres estão operacionais:**
 ```bash
 docker-compose ps
 ```
 
 **Saída esperada:**
 ```
-NAME                  STATUS
-edgebench_mosquitto   Up (healthy)
-edgebench_postgres    Up (healthy)
-edgebench_backend     Up
+NAME                  IMAGE                      STATUS
+edgebench_mosquitto   eclipse-mosquitto:2.0      Up (healthy)
+edgebench_postgres    postgres:15-alpine         Up (healthy)
+edgebench_backend     edgebench_backend:latest   Up
+edgebench_api         edgebench_backend:latest   Up
+edgebench_web         node:20-alpine             Up
 ```
 
-> **Nota:** O broker MQTT Mosquitto é iniciado automaticamente pelo Docker Compose e estará disponível na porta `1883`. As bancadas precisam do IP desta máquina como URL do broker (ex: `mqtt://192.168.1.100:1883`).
+#### Portas e Endpoints do Sistema
+
+| Serviço | Contêiner | Porta Exposta | Descrição / URL de Acesso |
+| :--- | :--- | :---: | :--- |
+| **Dashboard Web (Frontend)** | `edgebench_web` | **5173** | [`http://localhost:5173`](http://localhost:5173) — Painel industrial React para operadores e PCP |
+| **API REST (FastAPI)** | `edgebench_api` | **8000** | [`http://localhost:8000/docs`](http://localhost:8000/docs) — Documentação Swagger interativa da API |
+| **Broker MQTT (Mosquitto)** | `edgebench_mosquitto`| **1883** / **9001** | `1883` (TCP para ESP32 e Ingestor) e `9001` (WebSockets) |
+| **Banco de Dados (PostgreSQL)**| `edgebench_postgres`| **5433** | Host `localhost:5433` (redirecionado internamente para `5432`) |
+| **Ingestor & Scheduler** | `edgebench_backend` | — | Processa filas MQTT, executa cálculos OEE e dispara backups |
+
+> **Nota para as Bancadas:** As placas Heltec de bancada devem ser configuradas para apontar o broker MQTT para o IP local do seu computador na rede Wi-Fi (ex: `mqtt://192.168.1.100:1883`), e não `localhost`.
+
+> **Desenvolvimento Local do Frontend (Opcional sem Docker):**  
+> Para rodar a interface Web diretamente no Node.js local:
+> ```bash
+> cd app/web
+> npm install
+> npm run dev
+> ```
 
 ### 7.6 Iniciar o Painel Serial CLI (`app/hardware_comunication/uart_serial.py`)
 
@@ -603,11 +689,69 @@ docker-compose run --rm backend python main.py --export --bancada 1
 
 O arquivo `.xlsx` estará disponível na pasta `app/reports/`.
 
+### 8.6 Acesso e Verificação do Dashboard Web e API REST
+
+**1. Testar resposta da API REST via cURL:**
+```bash
+curl http://localhost:8000/api/status
+```
+
+**Saída esperada (JSON com KPIs globais e por bancada):**
+```json
+{
+  "success": true,
+  "data": {
+    "global_kpis": {
+      "total_pecas": 128,
+      "bancadas_ativas": 2,
+      "taxa_pecas_hora": 42.6,
+      "total_paradas": 0
+    },
+    "kpis_bancadas": [
+      {
+        "bancada": "BC-01",
+        "total_pecas": 65,
+        "disponibilidade": 98.4,
+        "paradas": 0,
+        "tempo_parado": 0.0,
+        "taxa_pecas_hora": 21.6
+      }
+    ]
+  }
+}
+```
+
+**2. Acessar o Dashboard Web no Navegador:**
+* Abra [`http://localhost:5173`](http://localhost:5173) no seu navegador.
+* **Recursos visuais disponíveis:**
+  * Cartões de métricas consolidadas (Total de Peças, Bancadas Ativas, Taxa Horária e Paradas de Linha).
+  * Gráfico interativo de produção por hora (Recharts) global e segmentado por bancada.
+  * Monitor individual de cada posto com porcentagem de disponibilidade e tempo ocioso.
+  * Aba de **Relatórios Cloud** com listagem direta dos arquivos sincronizados no Google Drive e links de download local `.xlsx`.
+
+### 8.7 Fechamento Automático de Turno e Sincronização em Nuvem (Google Sheets/Drive)
+
+O serviço de agendamento em segundo plano (`app/services/scheduler.py`) executa rotinas automáticas de fechamento nos horários pré-definidos dos três turnos da fábrica:
+* **06:01** — Fechamento do **Turno 3 (T3: 22h às 06h)**.
+* **14:01** — Fechamento do **Turno 1 (T1: 06h às 14h)**.
+* **22:01** — Fechamento do **Turno 2 (T2: 14h às 22h)**.
+
+A cada fechamento operacional, o sistema executa automaticamente:
+1. Agrupamento e processamento de todas as leituras e deltas de peças do turno.
+2. Geração da planilha Excel com abas de Resumo e Detalhamento em `app/reports/backups/EdgeBench_Fechamento_<timestamp>.xlsx`.
+3. Atualização online da planilha mestra **`EdgeBench_Painel_Producao`** no Google Sheets.
+4. Gravação de backup imutável do fechamento na pasta do Google Drive configurada.
+
+> **Exportação Manual com Envio Imediato para a Nuvem:**
+> ```bash
+> docker-compose run --rm backend python main.py --export --bancada BC-01 --upload-drive
+> ```
+
 ---
 
 ## 9. Principais Diferenciais de Engenharia
 
-1. **Salvamento Local (Offline-First):** Em caso de falha de infraestrutura de rede, o nó armazena os registros em memória Flash não volátil com particionamento LittleFS e proteção contra desligamentos abruptos de energia.
+1. **Salvamento Local:** Em caso de falha de infraestrutura de rede, o nó armazena os registros em memória Flash não volátil com particionamento LittleFS e proteção contra desligamentos abruptos de energia.
 2. **Buffer Binário de Alta Densidade (8 Bytes):** Cada registro de produção consome apenas 8 bytes (`count` + `timestamp`), comportando mais de **131.000 eventos** em apenas 1 MB de Flash (mais de **90 dias de autonomia** contínua sem Wi-Fi).
 3. **Pilha Dual-Core Segregada:**
    * **Core 1:** Exclusivo para tempo real crítico (ISR do sensor óptico, debounce temporal e pulso do LED).
