@@ -1,0 +1,128 @@
+services:
+
+  # ── Broker MQTT ─────────────────────────────────────────────────────────────
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: edgebench_mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883" # MQTT TCP
+      - "9001:9001" # MQTT WebSockets
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    networks:
+      - edgebench_net
+    healthcheck:
+      test: [ "CMD-SHELL", "mosquitto_pub -h localhost -t health -m ping -q 0 || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ── Banco de Dados ───────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: edgebench_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-edgebench}
+      POSTGRES_USER: ${POSTGRES_USER:-edgebench_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-edgebench_pass}
+    ports:
+      - "5433:5432" # 5432 host ocupado pelo PostgreSQL nativo; container usa 5432 internamente
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - edgebench_net
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-edgebench_user} -d ${POSTGRES_DB:-edgebench}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend Python ───────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: edgebench_backend:latest
+    container_name: edgebench_backend
+    restart: on-failure:10
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-edgebench}
+      POSTGRES_USER: ${POSTGRES_USER:-edgebench_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-edgebench_pass}
+      MQTT_HOST: mosquitto
+      MQTT_PORT: "1883"
+      MQTT_CLIENT_ID: edgebench_backend
+      MQTT_TOPIC_FILTER: fabrica/+/#
+      MQTT_QOS: "1"
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-google-credentials.json}
+      GOOGLE_DRIVE_FOLDER_ID: ${GOOGLE_DRIVE_FOLDER_ID:-}
+    volumes:
+      - ./reports:/app/reports # Relatórios Excel persistidos na pasta local do Host
+      - ./token.json:/app/token.json
+    networks:
+      - edgebench_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    # Comando padrão: ingestão MQTT contínua
+    # Para exportar relatório sob demanda, use:
+    #   docker compose run --rm backend python main.py --export --bancada BC-01
+    command: [ "python", "main.py" ]
+
+  # ── API REST (FastAPI) ───────────────────────────────────────────────────────
+  api:
+    image: edgebench_backend:latest
+    container_name: edgebench_api
+    restart: on-failure:10
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-edgebench}
+      POSTGRES_USER: ${POSTGRES_USER:-edgebench_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-edgebench_pass}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-google-credentials.json}
+      GOOGLE_DRIVE_FOLDER_ID: ${GOOGLE_DRIVE_FOLDER_ID:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./reports:/app/reports
+      - ./token.json:/app/token.json
+    networks:
+      - edgebench_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    command: [ "python", "api/main.py" ]
+
+  # ── Interface Web (React) ────────────────────────────────────────────────────
+  web:
+    image: node:20-alpine
+    container_name: edgebench_web
+    working_dir: /app
+    volumes:
+      - ./web:/app
+    ports:
+      - "5173:5173"
+    networks:
+      - edgebench_net
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+
+volumes:
+  mosquitto_data:
+  mosquitto_log:
+  postgres_data:
+
+networks:
+  edgebench_net:
+    driver: bridge

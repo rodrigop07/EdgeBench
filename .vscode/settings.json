@@ -1,6 +1,6 @@
 {
-    "idf.currentSetup": "C:\\esp\\v5.5.5\\esp-idf",
-    "idf.projectDir": "${workspaceFolder}/firmware",
+    "idf.currentSetup": "/home/ezparza/.espressif/v5.5.5/esp-idf",
+    "idf.projectDir": "${workspaceFolder}/firmware_bancada",
     "idf.openOcdConfigs": [
         "board/esp32s3-builtin.cfg"
     ],
@@ -25,5 +25,8 @@
         "editor.tabSize": 4,
         "editor.insertSpaces": true,
         "editor.detectIndentation": false
-    }
+    },
+    "idf.port": "/dev/ttyUSB0",
+    "idf.portWin": "COM3",
+    "cmake.sourceDirectory": "${workspaceFolder}/firmware_bancada"
 }

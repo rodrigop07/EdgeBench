@@ -93,3 +93,13 @@ Desktop.ini
 
 .clang-format
 .editorconfig
+/firmware_bancada/.cache/
+*.clangd
+/firmware_central/.cache/
+
+app/token.json
+app/credentials.json
+app/client_secret.json
+app/google-credentials.json
+app/reports/
+*.xlsx
