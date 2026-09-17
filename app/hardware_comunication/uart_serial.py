@@ -119,7 +119,7 @@ class LocalOTAServer:
         self.is_running = False
         logger.info("Servidor HTTP OTA encerrado")
 
-    def get_firmware_url(self, filename: str = "firmware.bin") -> str:
+    def get_firmware_url(self, filename: str = "firmware_bancada.bin") -> str:
         local_ip = self.get_local_ip()
         return f"http://{local_ip}:{self.port}/{filename}"
 
@@ -607,7 +607,7 @@ def ota_management_menu(gw: EdgeBenchGateway, ota_server: LocalOTAServer):
             _dispatch_ota(gw, url)
 
         elif sub_choice == "2":
-            url = input("\nDigite a URL completa do firmware.bin: ").strip()
+            url = input("\nDigite a URL completa do firmware_bancada.bin: ").strip()
             if not url:
                 print("URL vazia, cancelando")
                 continue

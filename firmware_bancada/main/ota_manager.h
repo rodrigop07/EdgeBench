@@ -16,7 +16,7 @@ esp_err_t ota_manager_init(void);
 
 /**
  * @brief inicia o processo de atualização OTA a partir de uma URL HTTP/HTTPS em segundo plano
- * @param url URL completa do arquivo binário (ex: "http://192.168.1.50:8080/firmware.bin")
+ * @param url URL completa do arquivo binário (ex: "http://192.168.1.50:8080/firmware_bancada.bin")
  * @return ESP_OK se a tarefa de atualização foi disparada com sucesso
  *         ESP_ERR_INVALID_ARG se a URL for nula ou vazia
  *         ESP_ERR_INVALID_STATE se já houver uma atualização OTA em andamento

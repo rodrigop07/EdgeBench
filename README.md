@@ -162,7 +162,7 @@ flowchart TD
 | :--- | :---: | :---: | :--- |
 | `fabrica/bancada_<id>/producao` | Nó ➔ Broker | 1 | Eventos de contagem em tempo real e replay do buffer offline: `{"bancada_id": "BC-01", "contagem": 12, "delta_pecas": 1, "timestamp": 1726435200, "modo_offline": false}` |
 | `fabrica/bancada_<id>/status` | Nó ➔ Broker | 1 | Heartbeat periódico e Last Will and Testament (LWT) configurado na inicialização: `{"bancada": 1, "status": "ONLINE"|"OFFLINE"|"PARADO", "timestamp": 1726435200}` |
-| `fabrica/bancada_<id>/ota` | Server ➔ Nó | 1 | Gatilho de atualização OTA HTTP direcionado a uma bancada específica: `{"url": "http://192.168.1.50:8080/firmware.bin"}` |
+| `fabrica/bancada_<id>/ota` | Server ➔ Nó | 1 | Gatilho de atualização OTA HTTP direcionado a uma bancada específica: `{"url": "http://192.168.1.50:8080/firmware_bancada.bin"}` |
 | `fabrica/todas/ota` | Server ➔ Broadcast | 1 | Gatilho de atualização OTA HTTP em broadcast para todo o chão de fábrica. |
 
 #### Modelo de Dados e Garantia de Idempotência (PostgreSQL)
@@ -282,8 +282,8 @@ graph LR
 3. **Rosqueamento da Antena:**
    * Rosqueie a antena chicote de 915 MHz no conector SMA fêmea até atingir o aperto manual firme.
 
-> ⚠️ **ALERTA CRÍTICO DE HARDWARE (RF Safety):**  
-> **NUNCA ligue a placa ou execute rotinas de transmissão de rádio LoRa sem a antena devidamente conectada!**  
+> **ALERTA DE HARDWARE (RF Safety):**  
+> **NUNCA ligue a placa ou execute rotinas de transmissão de rádio LoRa sem a antena devidamente conectada**  
 > Transmitir sinal de radiofrequência com a saída em circuito aberto (sem a terminação de carga casada de 50 Ω da antena) provoca a reflexão total da onda eletromagnética (*alto VSWR*). Essa energia refletida superaquece e resulta na **queima imediata e irreversível do amplificador de potência de RF (*Power Amplifier - PA*) integrado ao chip Semtech SX1262**.
 
 ### 3.4 Esquemático Elétrico Integrado do Nó de Bancada
