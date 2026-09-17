@@ -1,7 +1,5 @@
 """
-scheduler.py — Agendador de tarefas em segundo plano.
-
-Gerencia backups diários das planilhas e a sincronização com o Google Sheets/Drive.
+Agendador de tarefas em segundo plano para backup e sincronização com Google Drive/Sheets.
 """
 
 import logging
@@ -11,24 +9,18 @@ from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from config import app_config
-from excel_generator import generate_excel_report
-from google_sheets_sync import upload_to_sheets
+from settings.config import app_config
+from services.excel_generator import generate_excel_report
+from external_integrations.google_sheets_sync import upload_to_sheets
 
 logger = logging.getLogger(__name__)
 
 
 def perform_backup_and_sync():
-    """
-    Rotina periódica de consolidação:
-    1. Gera a planilha Excel com todos os dados acumulados.
-    2. Salva uma cópia local de backup histórico.
-    3. Atualiza a planilha Mestre ('EdgeBench_Painel_Producao') no Google Sheets.
-    4. Grava o fechamento histórico ('EdgeBench_Fechamento_<timestamp>') no Google Drive.
-    """
+    """Executa o backup periódico: gera o Excel, salva localmente e atualiza o Google Sheets e Drive."""
     logger.info("Iniciando rotina periódica de backup e sincronização com Google Drive...")
 
-    from analytics import full_report
+    from services.analytics import full_report
     data = full_report()
     excel_path = generate_excel_report(report_data=data)
     if not excel_path:

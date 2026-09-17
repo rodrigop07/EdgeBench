@@ -1,11 +1,6 @@
 """
-database.py — Engine e fábrica de sessões SQLAlchemy 2.0.
-
-Fornece:
-    - `engine`        : Engine configurada com pool de conexões.
-    - `SessionLocal`  : Fábrica de sessões (scoped_session para thread-safety).
-    - `get_session()` : Context manager para uso com `with`.
-    - `init_db()`     : Cria todas as tabelas mapeadas (idempotente).
+Gerenciador do Banco de Dados.
+Configura a conexão com o banco e cria as tabelas necessárias.
 """
 
 import logging
@@ -20,12 +15,12 @@ from config import db_config
 logger = logging.getLogger(__name__)
 
 
-# ── Base declarativa compartilhada por todos os models ───────────────────────
+# Base que todos os modelos do banco vão usar
 class Base(DeclarativeBase):
     pass
 
 
-# ── Engine com pool de conexões ──────────────────────────────────────────────
+# O "motor" de conexão com o banco
 engine = create_engine(
     db_config.url,
     pool_size=db_config.pool_size,
@@ -36,13 +31,13 @@ engine = create_engine(
 )
 
 
-# ── Verificação de conectividade no startup ───────────────────────────────────
+# Só pra checar se conectou certinho ao iniciar
 @event.listens_for(engine, "connect")
 def _on_connect(dbapi_conn, connection_record):
     logger.debug("Nova conexão PostgreSQL estabelecida (pid=%s)", dbapi_conn.get_backend_pid())
 
 
-# ── Fábrica de sessões thread-safe ───────────────────────────────────────────
+# Criador de sessões pro banco
 _session_factory = sessionmaker(
     bind=engine,
     autocommit=False,
@@ -55,13 +50,7 @@ SessionLocal: scoped_session = scoped_session(_session_factory)
 
 @contextmanager
 def get_session() -> Generator[Session, None, None]:
-    """
-    Context manager que fornece uma sessão e garante commit/rollback/close.
-
-    Uso:
-        with get_session() as session:
-            session.add(obj)
-    """
+    """Abre uma sessão segura com o banco e fecha sozinho depois."""
     session: Session = SessionLocal()
     try:
         yield session
@@ -74,10 +63,7 @@ def get_session() -> Generator[Session, None, None]:
 
 
 def init_db() -> None:
-    """
-    Cria todas as tabelas no banco de dados caso não existam.
-    Deve ser chamado uma única vez durante o startup da aplicação.
-    """
+    """Cria as tabelas no banco caso elas ainda não existam."""
     import models  # noqa: F401 — importar para registrar os mappers na Base
 
     logger.info("Inicializando schema do banco de dados…")
@@ -86,7 +72,7 @@ def init_db() -> None:
 
 
 def check_connection() -> bool:
-    """Verifica se o banco está acessível. Retorna True em caso de sucesso."""
+    """Testa se conseguimos falar com o banco de dados."""
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))

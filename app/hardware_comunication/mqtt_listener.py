@@ -1,18 +1,6 @@
 """
-mqtt_listener.py — Subscriber MQTT assíncrono (loop em thread background).
-
-Protocolo de payload: JSON (payload_format_indicator=1, UTF-8)
-
-Tópicos suportados (alinhados ao firmware C++ do ESP32):
-    - fabrica/bancada_<ID>/producao : Telemetria de produção (peças contadas)
-    - fabrica/bancada_<ID>/status   : Telemetria de estado e LWT (Last Will)
-
-Funcionalidades:
-    - Subscreve ao filtro de tópicos `fabrica/bancada_+/#` com QoS 1.
-    - Processa os dados de produção e atualizações de status (inclusive LWT/offline).
-    - Extrai o ID da bancada do payload ou diretamente da estrutura do tópico.
-    - Deduplicação via `idempotency_key` (duplicatas são ignoradas no DB).
-    - Reconnect automático e tratamento completo de exceções.
+Ouvinte MQTT (Recebe dados das bancadas).
+Fica rodando em segundo plano ouvindo as mensagens das placas e salva no banco de dados.
 """
 
 import json
@@ -25,22 +13,17 @@ from typing import Any
 import paho.mqtt.client as mqtt
 from sqlalchemy.exc import IntegrityError
 
-from config import mqtt_config
-from database import get_session
-from models import TelemetriaBancada
+from settings.config import mqtt_config
+from settings.database import get_session
+from settings.models import TelemetriaBancada
 
 logger = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Funções Auxiliares de Extração e Validação
-# ─────────────────────────────────────────────────────────────────────────────
+# Funções de Limpeza de Dados
 
 def _extract_bancada_id(data: dict[str, Any], topic: str) -> str:
-    """
-    Extrai o ID da bancada a partir do JSON ou do tópico MQTT.
-    Exemplo tópico: "fabrica/bancada_1/producao" -> "BC-01" ou "bancada_1"
-    """
+    """Descobre qual é o ID da bancada que mandou a mensagem."""
     # 1. Prioridade: Campo 'bancada_id' explícito no JSON
     if "bancada_id" in data and data["bancada_id"]:
         return str(data["bancada_id"]).strip()
@@ -65,12 +48,10 @@ def _extract_bancada_id(data: dict[str, Any], topic: str) -> str:
     return "BC-UNKNOWN"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Parsing de Payloads por Tópico
-# ─────────────────────────────────────────────────────────────────────────────
+# Leitura das Mensagens
 
 def _parse_production_payload(raw: bytes, topic: str) -> dict[str, Any] | None:
-    """Processa o payload publicado no tópico /producao (compatível com formato binário/JSON ESP32)."""
+    """Lê e entende a mensagem de produção da bancada."""
     try:
         data = json.loads(raw.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -79,7 +60,7 @@ def _parse_production_payload(raw: bytes, topic: str) -> dict[str, Any] | None:
 
     bancada_id = _extract_bancada_id(data, topic)
 
-    # Suporte a timestamp Unix Epoch (int/float) ou ISO string
+    # Converte a hora recebida
     ts_raw = data.get("timestamp") or data.get("timestamp_esp")
     if ts_raw is None:
         logger.warning("Payload de produção incompleto (sem timestamp) para %s | data=%s", bancada_id, data)
@@ -94,7 +75,7 @@ def _parse_production_payload(raw: bytes, topic: str) -> dict[str, Any] | None:
     delta_pecas = int(data.get("quantidade", data.get("delta_pecas", 1)))
     contagem_total = int(data.get("contagem", data.get("contagem_total", delta_pecas)))
 
-    # Mapeia modo_offline para status do banco
+    # Verifica se a placa estava offline quando gravou
     modo_offline = data.get("modo_offline", False)
     if modo_offline:
         status_raw = "OFFLINE_REPLAY"
@@ -110,7 +91,7 @@ def _parse_production_payload(raw: bytes, topic: str) -> dict[str, Any] | None:
     }
 
 def _parse_status_payload(raw: bytes, topic: str) -> dict[str, Any] | None:
-    """Processa o payload de diagnóstico/LWT publicado no tópico /status."""
+    """Lê e entende a mensagem de status da bancada."""
     try:
         data = json.loads(raw.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -119,7 +100,7 @@ def _parse_status_payload(raw: bytes, topic: str) -> dict[str, Any] | None:
 
     bancada_id = _extract_bancada_id(data, topic)
     
-    # Normaliza status ("online" -> "OPERANDO", "offline" -> "OFFLINE")
+    # Padroniza o status
     status_input = str(data.get("status", "OFFLINE")).upper().strip()
     if status_input == "ONLINE":
         status_raw = "OPERANDO"
@@ -143,12 +124,10 @@ def _parse_status_payload(raw: bytes, topic: str) -> dict[str, Any] | None:
         "status": status_raw,
     }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Persistência no PostgreSQL
-# ─────────────────────────────────────────────────────────────────────────────
+# Salvamento no Banco
 
 def _persist_telemetry(data: dict[str, Any]) -> bool:
-    """Persiste um registro de telemetria ou alteração de status no PostgreSQL."""
+    """Salva as informações no banco de dados."""
     bancada_id: str = data["bancada_id"]
     contagem_total: int = data["contagem_total"]
     delta_pecas: int = data["delta_pecas"]
@@ -201,9 +180,7 @@ def _persist_telemetry(data: dict[str, Any]) -> bool:
         return False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Callbacks do Paho-MQTT
-# ─────────────────────────────────────────────────────────────────────────────
+# Eventos do MQTT
 
 def _on_connect(client: mqtt.Client, userdata: Any, flags: dict, rc: int) -> None:
     if rc == 0:
@@ -223,7 +200,7 @@ def _on_disconnect(client: mqtt.Client, userdata: Any, rc: int) -> None:
 
 
 def _on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> None:
-    """Roteia o processamento com base no final do tópico."""
+    """Define o que fazer quando chega uma mensagem nova."""
     topic = msg.topic
     logger.debug("Mensagem recebida | tópico=%s | %d bytes", topic, len(msg.payload))
 
@@ -243,9 +220,7 @@ def _on_subscribe(client: mqtt.Client, userdata: Any, mid: int, granted_qos: lis
     logger.info("Subscrição confirmada | mid=%d | QoS concedido=%s", mid, granted_qos)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Classe Principal do Listener
-# ─────────────────────────────────────────────────────────────────────────────
+# O Ouvinte Principal
 
 class MQTTListener:
     def __init__(self) -> None:
@@ -293,7 +268,7 @@ if __name__ == "__main__":
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
 
-    from database import init_db
+    from settings.database import init_db
     init_db()
 
     listener = MQTTListener()

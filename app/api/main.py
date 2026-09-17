@@ -2,7 +2,7 @@ import os
 import sys
 from typing import List, Dict, Any
 
-# Adiciona o diretório app/ ao path para reaproveitar os módulos de banco de dados
+# Garante que possamos importar os módulos da raiz da aplicação
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from fastapi import FastAPI, Depends, HTTPException
@@ -10,8 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from database import engine, SessionLocal
-from models import TelemetriaBancada
+from settings.database import engine, SessionLocal
+from settings.models import TelemetriaBancada
 import logging
 
 logger = logging.getLogger(__name__)
@@ -25,10 +25,10 @@ def get_db():
 
 app = FastAPI(title="EdgeBench API", description="API para Dashboard de Produção OEE", version="1.0.0")
 
-# Configurar CORS (permitir chamadas do Front-end)
+# Permite que o frontend se comunique com esta API (CORS)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Em produção, restringir para o domínio correto
+    allow_origins=["*"],  # TODO: Restringir isso em produção
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -40,22 +40,16 @@ def read_root():
 
 @app.get("/api/status")
 def get_current_status(db: Session = Depends(get_db)):
-    """
-    Retorna o status atual de produção (resumo consolidado do turno aberto).
-    Para MVP, usaremos uma query simplificada sobre a telemetria mais recente.
-    """
+    """Retorna um resumo de como está a produção agora."""
     try:
-        # Busca a última leitura
+        # Pega a leitura mais recente do banco
         ultima_leitura = db.query(TelemetriaBancada).order_by(TelemetriaBancada.timestamp_esp.desc()).first()
         
-        # Agregações simples para o dia de hoje (simulando um turno)
-        # O ideal aqui é chamar uma função similar ao analytics.py
-        from analytics import full_report
-        
-        # O full_report processa os dados com base nos turnos no BD e retorna métricas
+        # Gera as métricas usando a lógica do nosso painel
+        from services.analytics import full_report
         data = full_report()
         
-        # 1. Global KPIs
+        # 1. Resumo Global
         global_raw = data.get("global_kpis", {})
         global_kpis = {
             "total_pecas": int(global_raw.get("total_pecas", 0)),
@@ -119,17 +113,15 @@ def get_current_status(db: Session = Depends(get_db)):
 
 @app.get("/api/reports")
 def list_reports():
-    """
-    Lista todos os relatórios gerados salvos no Google Drive.
-    """
+    """Lista os relatórios já salvos lá no Google Drive."""
     try:
-        from google_sheets_sync import list_drive_reports
+        from external_integrations.google_sheets_sync import list_drive_reports
         reports = list_drive_reports()
         
-        # Formata a lista para o front-end
+        # Arruma os dados para entregar direitinho pro front
         formatted_reports = []
         for r in reports:
-            # O tamanho pode não vir no Sheets nativo, mas vem no .xlsx. Vamos tratar caso não exista.
+            # Verifica o tamanho do arquivo, se tiver
             size = int(r.get("size", 0)) if "size" in r else 0
             
             formatted_reports.append({
@@ -137,7 +129,7 @@ def list_reports():
                 "filename": r.get("name"),
                 "webViewLink": r.get("webViewLink"),
                 "mimeType": r.get("mimeType"),
-                "created_at": r.get("createdTime"), # Já vem em formato string ISO
+                "created_at": r.get("createdTime"), # Já vai como texto pronto
                 "size_bytes": size
             })
             
@@ -148,9 +140,7 @@ def list_reports():
 
 @app.get("/api/reports/download/{filename}")
 def download_report(filename: str):
-    """
-    Baixa um relatório específico da pasta local.
-    """
+    """Envia um arquivo local de relatório para o usuário baixar."""
     # pyrefly: ignore [missing-import]
     from fastapi.responses import FileResponse
     

@@ -1,18 +1,6 @@
 """
-main.py — Ponto de entrada do EdgeBench Backend.
-
-Responsabilidades:
-    1. Configurar logging estruturado.
-    2. Aguardar conectividade com o PostgreSQL (retry com backoff).
-    3. Inicializar o schema do banco (create_all idempotente).
-    4. Iniciar o listener MQTT em thread background.
-    5. Expor `export_report()` para geração de planilha sob demanda.
-    6. Manter o loop principal vivo com tratamento de SIGINT/SIGTERM.
-
-Uso:
-    python main.py                      # Inicia o backend completo
-    python main.py --export             # Gera relatório e encerra
-    python main.py --export --bancada BC-01 --start 2026-09-01 --end 2026-09-14
+Ponto de entrada do EdgeBench Backend.
+Aqui iniciamos o banco de dados, o MQTT e o agendador de tarefas.
 """
 
 import argparse
@@ -25,14 +13,12 @@ from typing import Optional
 DB_RETRY_MAX_WAIT = 30   # segundos máximos entre tentativas
 DB_RETRY_TIMEOUT  = 300  # tempo total máximo de espera (5 minutos)
 
-from config import app_config, db_config, mqtt_config
-from database import check_connection, init_db
-from mqtt_listener import MQTTListener
-from scheduler import start_scheduler
+from settings.config import app_config, db_config, mqtt_config
+from settings.database import check_connection, init_db
+from hardware_comunication.mqtt_listener import MQTTListener
+from services.scheduler import start_scheduler
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Logging estruturado
-# ─────────────────────────────────────────────────────────────────────────────
+# Configuração de Logs
 
 logging.basicConfig(
     level=getattr(logging, app_config.log_level.upper(), logging.INFO),
@@ -45,21 +31,17 @@ logging.basicConfig(
 logger = logging.getLogger("edgebench.main")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Estado global da aplicação
-# ─────────────────────────────────────────────────────────────────────────────
+# Variáveis Globais
 
 _listener: Optional[MQTTListener] = None
 _scheduler = None
 _running: bool = False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Gerenciamento de sinais do SO
-# ─────────────────────────────────────────────────────────────────────────────
+# Tratamento de Sinais (Encerramento)
 
 def _handle_shutdown(signum: int, frame) -> None:
-    """Handler para SIGINT e SIGTERM — encerra o backend graciosamente."""
+    """Encerra a aplicação de forma segura quando recebe Ctrl+C."""
     global _running
     sig_name = signal.Signals(signum).name
     logger.info("Sinal %s recebido — iniciando shutdown gracioso…", sig_name)
@@ -70,18 +52,10 @@ signal.signal(signal.SIGINT,  _handle_shutdown)
 signal.signal(signal.SIGTERM, _handle_shutdown)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Startup
-# ─────────────────────────────────────────────────────────────────────────────
+# Inicialização (Startup)
 
 def _wait_for_postgres() -> None:
-    """
-    Aguarda o PostgreSQL ficar disponível com backoff exponencial.
-    Evita que o container saia em loop durante o startup do Docker Compose.
-
-    Raises:
-        SystemExit: Se o banco não ficar acessível dentro de DB_RETRY_TIMEOUT segundos.
-    """
+    """Garante que o PostgreSQL subiu antes de continuarmos (útil no Docker)."""
     attempt = 0
     elapsed = 0.0
     wait = 1  # segundos iniciais
@@ -117,15 +91,7 @@ def _wait_for_postgres() -> None:
 
 
 def startup() -> MQTTListener:
-    """
-    Executa a sequência de inicialização do backend.
-
-    Returns:
-        Instância do MQTTListener já iniciada.
-
-    Raises:
-        SystemExit: Se o banco de dados não ficar acessível dentro do timeout.
-    """
+    """Prepara tudo: banco, MQTT e tarefas agendadas."""
     logger.info("=" * 60)
     logger.info("  EdgeBench Backend — Iniciando…")
     logger.info("=" * 60)
@@ -133,17 +99,17 @@ def startup() -> MQTTListener:
     logger.info("Broker MQTT    : %s:%d", mqtt_config.host, mqtt_config.port)
     logger.info("Tópico MQTT    : %s (QoS %d)", mqtt_config.topic_filter, mqtt_config.qos)
 
-    # ── Aguarda PostgreSQL com retry + backoff ────────────────────────────────
+    # Espera o banco ficar pronto
     _wait_for_postgres()
 
-    # ── Inicializa o schema ───────────────────────────────────────────────────
+    # Cria as tabelas necessárias
     init_db()
 
-    # ── Inicia o listener MQTT ────────────────────────────────────────────────
+    # Começa a ouvir mensagens do MQTT
     listener = MQTTListener()
     listener.start()
 
-    # ── Inicia o agendador de backups ─────────────────────────────────────────
+    # Liga as rotinas de backup e sincronização
     global _scheduler
     _scheduler = start_scheduler()
 
@@ -152,9 +118,7 @@ def startup() -> MQTTListener:
     return listener
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Exportação de relatório sob demanda
-# ─────────────────────────────────────────────────────────────────────────────
+# Geração de Relatórios
 
 def export_report(
     bancada_id: Optional[str] = None,
@@ -162,20 +126,9 @@ def export_report(
     end_dt: Optional[str] = None,
     output_path: Optional[str] = None,
 ) -> str:
-    """
-    Gera o relatório Excel sob demanda.
-
-    Args:
-        bancada_id  : Filtra por bancada específica (ex.: "BC-01"). None = todas.
-        start_dt    : Data/hora inicial ISO 8601 (ex.: "2026-09-01T00:00:00").
-        end_dt      : Data/hora final ISO 8601 (ex.: "2026-09-14T23:59:59").
-        output_path : Caminho personalizado para o arquivo `.xlsx`. Opcional.
-
-    Returns:
-        Caminho absoluto do arquivo gerado.
-    """
-    from analytics import full_report
-    from excel_generator import generate_excel_report
+    """Cria a planilha Excel sob demanda filtrando os dados se necessário."""
+    from services.analytics import full_report
+    from services.excel_generator import generate_excel_report
 
     logger.info(
         "Gerando relatório… bancada=%s | início=%s | fim=%s",
@@ -191,12 +144,10 @@ def export_report(
     return path
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Loop principal
-# ─────────────────────────────────────────────────────────────────────────────
+# Execução Principal
 
 def run() -> None:
-    """Loop principal que mantém o backend ativo."""
+    """Inicia os serviços e fica rodando infinitamente."""
     global _listener, _running
 
     _listener = startup()
@@ -214,9 +165,7 @@ def run() -> None:
         logger.info("EdgeBench Backend encerrado. Até logo!")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CLI
-# ─────────────────────────────────────────────────────────────────────────────
+# Comandos do Terminal
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -281,7 +230,7 @@ if __name__ == "__main__":
         print(f"\nRelatório gerado: {path}")
 
         if args.upload_drive:
-            from google_sheets_sync import upload_to_sheets
+            from external_integrations.google_sheets_sync import upload_to_sheets
             print("\nEnviando relatório para o Google Drive / Sheets...")
             bancada_tag = args.bancada or "Consolidado"
             sheet_title = f"EdgeBench_{bancada_tag}_{time.strftime('%Y-%m-%d_%H%M%S')}"

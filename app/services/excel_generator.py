@@ -1,12 +1,6 @@
 """
-excel_generator.py — Gerador de relatório executivo `.xlsx` via OpenPyXL.
-
-Arquitetura do Relatório Executivo (Padrão Indústria 4.0 / PCP):
-    Aba 1 "KPI Cards"      : Painel Executivo com KPIs Globais da Linha + Cartões Detalhados por Bancada.
-    Aba 2 "Por Hora"       : Matriz Cruzada (Bancada x Hora) com Totais de Linha/Bancada + Gráfico de Barras.
-    Aba 3 "Por Turno"      : Acompanhamento de Turnos com Eficiência (%) e Totalizador Consolidado.
-    Aba 4 "Ociosidade RN06": Auditoria de Paradas Operacionais Não Programadas (>15 minutos sem peça).
-    Aba 5 "Dados Brutos"   : Registros completos com formatação de data/hora amigável.
+Gerador de planilhas Excel.
+Pega os dados analisados e monta um arquivo .xlsx bonitão e formatado para a diretoria.
 """
 
 import logging
@@ -26,13 +20,11 @@ from openpyxl.styles import (
 )
 from openpyxl.utils import get_column_letter
 
-from config import app_config
+from settings.config import app_config
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Paleta de Estilos Corporativa (PCP / Indústria 4.0)
-# ─────────────────────────────────────────────────────────────────────────────
+# Cores e Fontes da Planilha
 
 C_NAVY_DARK     = "1F4E78"   # Azul Escuro Executivo (Cabeçalhos principais)
 C_BLUE_MID      = "2E75B6"   # Azul Médio (Sub-cabeçalhos e cartões)
@@ -82,9 +74,7 @@ BORDER_HEADER   = Border(left=_thin_side, right=_thin_side, top=_thick_side, bot
 BORDER_TOTAL    = Border(left=_thin_side, right=_thin_side, top=_thin_side, bottom=_double_side)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Funções Auxiliares
-# ─────────────────────────────────────────────────────────────────────────────
+# Ajudantes
 
 def _auto_column_width(ws, min_width: int = 12, max_width: int = 50) -> None:
     """Ajusta automaticamente a largura das colunas mantendo espaçamento agradável."""
@@ -98,9 +88,7 @@ def _auto_column_width(ws, min_width: int = 12, max_width: int = 50) -> None:
         ws.column_dimensions[col_letter].width = max(min_width, min(max_len + 4, max_width))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Aba 1: KPI Cards (Visão Geral da Fábrica + Cartões por Posto)
-# ─────────────────────────────────────────────────────────────────────────────
+# Construção da Aba 1: Resumo Global
 
 def _build_kpi_sheet(wb: Workbook, global_kpis: Dict[str, Any], kpis_df: pd.DataFrame) -> None:
     ws = wb.active
@@ -248,9 +236,7 @@ def _build_kpi_sheet(wb: Workbook, global_kpis: Dict[str, Any], kpis_df: pd.Data
         ws.column_dimensions[c].width = 22
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Aba 2: Matriz Cruzada Por Hora (Bancada x Hora) + Gráfico de Barras
-# ─────────────────────────────────────────────────────────────────────────────
+# Construção da Aba 2: Produção por Hora
 
 def _build_hourly_sheet(wb: Workbook, pivot_df: pd.DataFrame, flat_df: pd.DataFrame) -> None:
     ws = wb.create_sheet(title="Por Hora")
@@ -361,10 +347,7 @@ def _build_hourly_sheet(wb: Workbook, pivot_df: pd.DataFrame, flat_df: pd.DataFr
     ws.freeze_panes = "B5"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-# Aba 3: Produção por Turno
-# ─────────────────────────────────────────────────────────────────────────────
+# Construção da Aba 3: Produção por Turno
 
 def _build_shift_sheet(wb: Workbook, turno_df: pd.DataFrame) -> None:
     ws = wb.create_sheet(title="Por Turno")
@@ -471,9 +454,7 @@ def _build_shift_sheet(wb: Workbook, turno_df: pd.DataFrame) -> None:
     ws.freeze_panes = "A5"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Aba 4: Dados Brutos
-# ─────────────────────────────────────────────────────────────────────────────
+# Construção da Aba 4: Dados Crus
 
 def _build_raw_sheet(wb: Workbook, raw_df: pd.DataFrame) -> None:
     ws = wb.create_sheet(title="Dados Brutos")
@@ -534,17 +515,13 @@ def _build_raw_sheet(wb: Workbook, raw_df: pd.DataFrame) -> None:
     ws.freeze_panes = "A5"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Função Pública de Geração Executiva
-# ─────────────────────────────────────────────────────────────────────────────
+# A Função Principal que Gera o Excel
 
 def generate_excel_report(
     report_data: Dict[str, Any],
     output_path: Optional[str] = None,
 ) -> str:
-    """
-    Gera o relatório executivo .xlsx com arquitetura visual corporativa limpa.
-    """
+    """Cria e salva a planilha final em disco."""
     os.makedirs(app_config.reports_dir, exist_ok=True)
 
     if output_path is None:

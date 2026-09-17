@@ -1,13 +1,7 @@
 """
-auth_google.py — Script para autenticação inicial do Google Drive via OAuth 2.0.
-
-Executa o fluxo de autorização no navegador da máquina, permitindo que o usuário
-faça login com sua conta Google e aprove o acesso ao Drive. Ao concluir, salva
-automaticamente o `token.json` na pasta app/, que será utilizado pelo backend
-para sincronização contínua.
-
-Uso:
-    python auth_google.py
+Script de Login no Google Drive.
+Abre o navegador pra você fazer login com a sua conta do Google e salva a permissão
+para o nosso sistema conseguir enviar as planilhas automaticamente.
 """
 
 import os
@@ -45,12 +39,12 @@ def authenticate():
     print("   (Faça login com a conta Google que gerenciará os relatórios)")
     creds = flow.run_local_server(port=0, prompt='consent')
 
-    # Salva o token.json com o refresh token
+    # Salva o arquivo de permissão (token)
     print(f"\n3. Salvando credenciais de acesso em: {TOKEN_FILE}")
     with open(TOKEN_FILE, 'w', encoding='utf-8') as token:
         token.write(creds.to_json())
 
-    # Valida a conexão chamando a API do Drive
+    # Testa se deu tudo certo conectando no Drive
     try:
         service = build('drive', 'v3', credentials=creds)
         about = service.about().get(fields="user").execute()
@@ -63,7 +57,7 @@ def authenticate():
         print(f" Conectado como : {name} ({email})")
         print("=" * 60)
 
-        # Pergunta ou ajuda a identificar a pasta de relatórios
+        # Procura as pastas no seu Drive para ajudar a configurar
         print("\nVerificando pastas no seu Google Drive...")
         results = service.files().list(
             q="mimeType='application/vnd.google-apps.folder' and trashed=false",

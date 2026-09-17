@@ -1,12 +1,6 @@
 """
-google_sheets_sync.py — Sincronização e upload de relatórios para o Google Drive / Sheets.
-
-Funcionalidades:
-    - Autenticação OAuth 2.0 resiliente com renovação automática de token.
-    - Conversão automática de .xlsx para planilha nativa do Google Sheets (mimeType).
-    - Criação automática da pasta 'EdgeBench_Relatorios' caso não esteja configurada.
-    - Suporte a atualização de painel mestre ou arquivamento histórico versionado.
-    - Listagem estruturada de relatórios existentes para futura interface web.
+Sincroniza os relatórios com o Google Drive/Sheets.
+Faz o login, cria a pasta se não existir e envia o arquivo do Excel para a nuvem.
 """
 
 import logging
@@ -21,7 +15,7 @@ from googleapiclient.discovery import build
 # pyrefly: ignore [missing-import]
 from googleapiclient.http import MediaFileUpload
 
-from config import google_config
+from settings.config import google_config
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +23,7 @@ SCOPES = ['https://www.googleapis.com/auth/drive']
 
 
 def _resolve_token_path() -> str:
-    """Identifica o caminho correto do token.json (dentro do container ou no host)."""
+    """Descobre onde está o arquivo de login (token.json)."""
     # 1. Variável de configuração explícita
     if google_config.token_path and os.path.exists(google_config.token_path):
         return google_config.token_path
@@ -48,7 +42,7 @@ def _resolve_token_path() -> str:
 
 
 def get_drive_service():
-    """Autentica com OAuth 2.0 utilizando token.json e renova o token se necessário."""
+    """Faz o login no Google Drive usando o token."""
     token_path = _resolve_token_path()
 
     if not os.path.exists(token_path) or os.path.getsize(token_path) <= 4:
@@ -61,7 +55,7 @@ def get_drive_service():
     try:
         creds = Credentials.from_authorized_user_file(token_path, SCOPES)
 
-        # Renova o token automaticamente se estiver expirado
+        # Se o login venceu, pega um novo
         if creds and creds.expired and creds.refresh_token:
             logger.info("Renovando token OAuth expirado do Google Drive...")
             creds.refresh(Request())
@@ -76,7 +70,7 @@ def get_drive_service():
 
 
 def get_or_create_folder(service, folder_name: str = "EdgeBench_Relatorios") -> str:
-    """Localiza a pasta pelo nome ou cria uma nova na raiz do Google Drive."""
+    """Procura a pasta de relatórios. Se não existir, cria uma nova."""
     try:
         query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and trashed=false"
         results = service.files().list(q=query, fields="files(id, name)").execute()
@@ -99,7 +93,7 @@ def get_or_create_folder(service, folder_name: str = "EdgeBench_Relatorios") -> 
 
 
 def find_file_in_folder(service, filename: str, folder_id: str) -> Optional[str]:
-    """Procura um arquivo por nome dentro de uma pasta e retorna o ID, se existir."""
+    """Tenta encontrar uma planilha já existente na pasta."""
     query = f"'{folder_id}' in parents and name='{filename}' and trashed=false"
     try:
         results = service.files().list(q=query, fields="files(id, name)").execute()
@@ -117,19 +111,7 @@ def upload_to_sheets(
     convert_to_sheets: bool = True,
     update_if_exists: bool = False,
 ) -> Optional[Dict[str, Any]]:
-    """
-    Realiza o upload de um arquivo .xlsx para o Google Drive com conversão para Google Sheets.
-
-    Args:
-        excel_filepath    : Caminho absoluto ou relativo do arquivo .xlsx local.
-        sheet_name        : Nome de exibição da planilha no Google Drive.
-        convert_to_sheets : Se True, converte para planilha editável nativa do Google Sheets.
-        update_if_exists  : Se True, atualiza o arquivo se já existir com mesmo nome na pasta.
-
-    Returns:
-        Dicionário com metadados do arquivo criado/atualizado (id, name, webViewLink),
-        ou None em caso de falha.
-    """
+    """Envia o arquivo do Excel pro Google Drive e, se quiser, transforma em Google Sheets nativo."""
     service = get_drive_service()
     if not service:
         logger.error("Serviço do Google Drive indisponível. Upload cancelado.")
@@ -139,7 +121,7 @@ def upload_to_sheets(
         logger.error("Arquivo local não encontrado para upload: %s", excel_filepath)
         return None
 
-    # Define a pasta destino: se GOOGLE_DRIVE_FOLDER_ID estiver configurado, usa; senão cria 'EdgeBench_Relatorios'
+    # Descobre ou cria a pasta onde o arquivo vai ficar
     folder_id = google_config.folder_id
     if not folder_id:
         folder_id = get_or_create_folder(service, "EdgeBench_Relatorios")
@@ -153,7 +135,7 @@ def upload_to_sheets(
 
         file_metadata: Dict[str, Any] = {'name': clean_name}
         if convert_to_sheets:
-            # Esta propriedade instrui o Google Drive a converter o .xlsx em Google Sheets nativo
+            # Faz o Google transformar o arquivo em uma planilha editável na nuvem
             file_metadata['mimeType'] = 'application/vnd.google-apps.spreadsheet'
 
         media = MediaFileUpload(
@@ -196,10 +178,7 @@ def upload_to_sheets(
 
 
 def list_drive_reports(folder_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """
-    Lista os relatórios disponíveis na pasta do Google Drive.
-    Útil para alimentação de painéis e páginas web de consulta.
-    """
+    """Traz a lista de todas as planilhas que já estão no Google Drive."""
     service = get_drive_service()
     if not service:
         return []
