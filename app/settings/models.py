@@ -8,7 +8,10 @@ from datetime import datetime, timezone
 from sqlalchemy import DateTime, Index, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from database import Base
+try:
+    from .database import Base
+except ImportError:
+    from settings.database import Base
 
 
 class TelemetriaBancada(Base):

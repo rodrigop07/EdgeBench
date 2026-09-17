@@ -143,16 +143,24 @@ def download_report(filename: str):
     """Envia um arquivo local de relatório para o usuário baixar."""
     # pyrefly: ignore [missing-import]
     from fastapi.responses import FileResponse
-    
-    reports_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'reports'))
+    from settings.config import app_config
+
+    reports_dir = os.path.abspath(app_config.reports_dir)
     filepath = os.path.join(reports_dir, filename)
-    
+
     if not os.path.exists(filepath) or not filepath.startswith(reports_dir):
         raise HTTPException(status_code=404, detail="Relatório não encontrado")
-        
+
     return FileResponse(path=filepath, filename=filename, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 if __name__ == "__main__":
     # pyrefly: ignore [missing-import]
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    # Determina o target do uvicorn dependendo do diretório de onde o comando foi disparado
+    if os.path.exists(os.path.join("app", "api", "main.py")):
+        target = "app.api.main:app"
+    elif os.path.exists(os.path.join("api", "main.py")):
+        target = "api.main:app"
+    else:
+        target = "main:app"
+    uvicorn.run(target, host="0.0.0.0", port=8000, reload=True)

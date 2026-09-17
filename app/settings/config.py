@@ -7,7 +7,12 @@ import os
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
-load_dotenv()  # Lê o arquivo .env se ele existir
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_dotenv_path = os.path.join(BASE_DIR, ".env")
+if os.path.exists(_dotenv_path):
+    load_dotenv(_dotenv_path)
+else:
+    load_dotenv()  # Lê o arquivo .env do diretório de trabalho se ele existir
 
 
 @dataclass(frozen=True)
@@ -25,6 +30,9 @@ class DatabaseConfig:
     @property
     def url(self) -> str:
         """Monta a URL de conexão do banco."""
+        env_url = os.getenv("DATABASE_URL")
+        if env_url:
+            return env_url
         return (
             f"postgresql+psycopg2://{self.user}:{self.password}"
             f"@{self.host}:{self.port}/{self.name}"
@@ -58,7 +66,9 @@ class AppConfig:
     """Outras configurações gerais."""
 
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
-    reports_dir: str = field(default_factory=lambda: os.getenv("REPORTS_DIR", "reports"))
+    reports_dir: str = field(
+        default_factory=lambda: os.getenv("REPORTS_DIR", os.path.join(BASE_DIR, "reports"))
+    )
 
 
 # Instâncias prontas para usar no resto do código
@@ -71,10 +81,16 @@ class GoogleConfig:
     """Configurações da nuvem do Google."""
 
     credentials_path: str = field(
-        default_factory=lambda: os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "credentials.json")
+        default_factory=lambda: os.getenv(
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            os.path.join(BASE_DIR, "credentials.json") if os.path.exists(os.path.join(BASE_DIR, "credentials.json")) else "credentials.json"
+        )
     )
     token_path: str = field(
-        default_factory=lambda: os.getenv("GOOGLE_TOKEN_PATH", "/app/token.json" if os.path.exists("/app") else "token.json")
+        default_factory=lambda: os.getenv(
+            "GOOGLE_TOKEN_PATH",
+            "/app/token.json" if os.path.exists("/app/token.json") else os.path.join(BASE_DIR, "token.json")
+        )
     )
     folder_id: str = field(default_factory=lambda: os.getenv("GOOGLE_DRIVE_FOLDER_ID", ""))
 

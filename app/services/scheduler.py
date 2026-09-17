@@ -5,9 +5,14 @@ Agendador de tarefas em segundo plano para backup e sincronização com Google D
 import logging
 import os
 import shutil
+import sys
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+
+APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
 
 from settings.config import app_config
 from services.excel_generator import generate_excel_report

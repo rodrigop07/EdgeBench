@@ -15,6 +15,12 @@ from googleapiclient.discovery import build
 # pyrefly: ignore [missing-import]
 from googleapiclient.http import MediaFileUpload
 
+import sys
+
+APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
+
 from settings.config import google_config
 
 logger = logging.getLogger(__name__)
@@ -31,6 +37,7 @@ def _resolve_token_path() -> str:
     # 2. Caminhos comuns
     candidates = [
         "/app/token.json",
+        os.path.join(APP_DIR, "token.json"),
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "token.json"),
         "token.json",
     ]
@@ -38,7 +45,7 @@ def _resolve_token_path() -> str:
         if os.path.exists(c):
             return c
 
-    return google_config.token_path or "token.json"
+    return google_config.token_path or os.path.join(APP_DIR, "token.json")
 
 
 def get_drive_service():

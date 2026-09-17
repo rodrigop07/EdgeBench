@@ -5,10 +5,15 @@ Aqui iniciamos o banco de dados, o MQTT e o agendador de tarefas.
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import time
 from typing import Optional
+
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
 
 DB_RETRY_MAX_WAIT = 30   # segundos máximos entre tentativas
 DB_RETRY_TIMEOUT  = 300  # tempo total máximo de espera (5 minutos)

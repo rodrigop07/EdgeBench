@@ -35,8 +35,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("EdgeBench_Serial")
 
-# Garante que a gente consiga importar as configs
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Garante que a gente consiga importar as configs da pasta app
+APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
+
 try:
     from settings.config import mqtt_config
     DEFAULT_MQTT_HOST = mqtt_config.host
@@ -46,7 +49,7 @@ except Exception:
     DEFAULT_MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 
 DEFAULT_BUILD_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "firmware", "build")
+    os.path.join(os.path.dirname(__file__), "..", "..", "firmware", "build")
 )
 
 

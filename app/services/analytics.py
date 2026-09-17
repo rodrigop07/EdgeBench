@@ -4,10 +4,16 @@ Aqui pegamos os dados crus do banco e transformamos em métricas úteis (total d
 """
 
 import logging
+import os
+import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from sqlalchemy import text
+
+APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
 
 from settings.database import engine
 

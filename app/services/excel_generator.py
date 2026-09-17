@@ -5,6 +5,7 @@ Pega os dados analisados e monta um arquivo .xlsx bonitão e formatado para a di
 
 import logging
 import os
+import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -19,6 +20,10 @@ from openpyxl.styles import (
     Side,
 )
 from openpyxl.utils import get_column_letter
+
+APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
 
 from settings.config import app_config
 

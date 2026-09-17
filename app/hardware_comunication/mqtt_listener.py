@@ -5,13 +5,19 @@ Fica rodando em segundo plano ouvindo as mensagens das placas e salva no banco d
 
 import json
 import logging
+import os
 import re
+import sys
 import time
 from datetime import datetime, timezone
 from typing import Any
 
 import paho.mqtt.client as mqtt
 from sqlalchemy.exc import IntegrityError
+
+APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
 
 from settings.config import mqtt_config
 from settings.database import get_session

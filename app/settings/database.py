@@ -10,7 +10,10 @@ from typing import Generator
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Session, scoped_session, sessionmaker
 
-from config import db_config
+try:
+    from .config import db_config
+except ImportError:
+    from settings.config import db_config
 
 logger = logging.getLogger(__name__)
 
@@ -21,14 +24,16 @@ class Base(DeclarativeBase):
 
 
 # O "motor" de conexão com o banco
-engine = create_engine(
-    db_config.url,
-    pool_size=db_config.pool_size,
-    max_overflow=db_config.max_overflow,
-    pool_pre_ping=True,         # Valida conexões antes de entregar do pool
-    pool_recycle=1800,          # Recicla conexões a cada 30 minutos
-    echo=False,                 # Defina True para debug de queries SQL
-)
+_engine_kwargs = {"echo": False}
+if not db_config.url.startswith("sqlite"):
+    _engine_kwargs.update({
+        "pool_size": db_config.pool_size,
+        "max_overflow": db_config.max_overflow,
+        "pool_pre_ping": True,
+        "pool_recycle": 1800,
+    })
+
+engine = create_engine(db_config.url, **_engine_kwargs)
 
 
 # Só pra checar se conectou certinho ao iniciar
@@ -64,7 +69,10 @@ def get_session() -> Generator[Session, None, None]:
 
 def init_db() -> None:
     """Cria as tabelas no banco caso elas ainda não existam."""
-    import models  # noqa: F401 — importar para registrar os mappers na Base
+    try:
+        from . import models  # noqa: F401 — importar para registrar os mappers na Base
+    except ImportError:
+        from settings import models  # noqa: F401
 
     logger.info("Inicializando schema do banco de dados…")
     Base.metadata.create_all(bind=engine)

@@ -17,8 +17,22 @@ SCOPES = [
 ]
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CREDENTIALS_FILE = os.path.join(SCRIPT_DIR, 'credentials.json')
-TOKEN_FILE = os.path.join(SCRIPT_DIR, 'token.json')
+APP_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, '..'))
+
+# Tenta encontrar credentials.json em caminhos prováveis (env, pasta app/, pasta atual ou pasta do script)
+_candidates_creds = [
+    os.getenv("GOOGLE_APPLICATION_CREDENTIALS", ""),
+    os.path.join(APP_DIR, 'credentials.json'),
+    os.path.join(os.getcwd(), 'credentials.json'),
+    os.path.join(SCRIPT_DIR, 'credentials.json'),
+]
+CREDENTIALS_FILE = os.path.join(APP_DIR, 'credentials.json')
+for _c in _candidates_creds:
+    if _c and os.path.exists(_c):
+        CREDENTIALS_FILE = _c
+        break
+
+TOKEN_FILE = os.getenv("GOOGLE_TOKEN_PATH", os.path.join(APP_DIR, 'token.json'))
 
 
 def authenticate():
